@@ -126,6 +126,29 @@ export function validateStory(template: StoryTemplate, rows: StoryRow[]): Valida
   return issues;
 }
 
+export function validateContentLength(rows: StoryRow[], maxCharacters: number): ValidationIssue[] {
+  if (!Number.isFinite(maxCharacters) || maxCharacters <= 0) {
+    return [];
+  }
+
+  return rows.flatMap((row, rowIndex) => {
+    const content = row.content ?? "";
+    const characterCount = countCharacters(content);
+    if (characterCount <= maxCharacters) {
+      return [];
+    }
+
+    return [
+      {
+        level: "warning" as const,
+        rowIndex,
+        columnKey: "content",
+        message: `正文 ${characterCount} 字，超过上限 ${maxCharacters} 字`,
+      },
+    ];
+  });
+}
+
 function validateRowReferences(
   template: StoryTemplate,
   row: StoryRow,
@@ -185,4 +208,8 @@ function findColumn(template: StoryTemplate, preferredKey: string): ColumnTempla
 
 function valueOf(row: StoryRow, column?: ColumnTemplate): string {
   return column ? (row[column.key] ?? "").trim() : "";
+}
+
+function countCharacters(value: string): number {
+  return Array.from(value).length;
 }

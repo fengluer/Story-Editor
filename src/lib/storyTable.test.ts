@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import sample from "../__fixtures__/100101-1.csv?raw";
+import branchSample from "../__fixtures__/71003.csv?raw";
 import { applyReplacement, defaultReplaceColumns } from "./replace";
 import { exportWorkbookBuffer, importWorkbookBuffer } from "./workbook";
-import { buildMatrix, exportCsvText, importCsvText, importMatrix, validateStory } from "./storyTable";
+import { buildMatrix, exportCsvText, importCsvText, importMatrix, validateContentLength, validateStory } from "./storyTable";
 import { defaultTemplate } from "../defaultTemplate";
 
 const expectedKeys = [
@@ -85,6 +86,33 @@ describe("story table format", () => {
   it("reports no reference problems for the sample", () => {
     const parsed = importCsvText(sample, "100101-1.csv");
     expect(validateStory(parsed.template, parsed.rows)).toEqual([]);
+  });
+
+  it("parses the latest branching sample with shared branch targets", () => {
+    const parsed = importCsvText(branchSample, "71003.csv");
+    const options = parsed.rows.filter((row) => row.sign === "&");
+
+    expect(parsed.template.columns.map((column) => column.key)).toEqual(expectedKeys);
+    expect(parsed.rows).toHaveLength(12);
+    expect(options.map((row) => row.content)).toEqual(["选项A", "选项B", "选项C"]);
+    expect(new Set(options.map((row) => row.parent_id))).toEqual(new Set(["2540"]));
+    expect(parsed.rows.find((row) => row.id === "2542")?.skip).toBe("2546");
+    expect(parsed.rows.find((row) => row.id === "2547")?.skip).toBe("2548");
+    expect(parsed.rows.find((row) => row.id === "2548")?.skip).toBe("2549");
+    expect(validateStory(parsed.template, parsed.rows)).toEqual([]);
+  });
+
+  it("reports content rows above the configured character limit", () => {
+    const issues = validateContentLength(
+      [
+        { id: "1", sign: "#", content: "短句" },
+        { id: "2", sign: "#", content: "这是一句超过限制的文本" },
+      ],
+      6,
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ rowIndex: 1, columnKey: "content" });
   });
 
   it("does not validate parent references for begin nodes", () => {

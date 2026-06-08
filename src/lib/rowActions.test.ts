@@ -9,31 +9,31 @@ describe("story node actions", () => {
   it("recognizes branch option nodes from the reference table", () => {
     const parsed = importCsvText(branchSample, "71003.csv");
 
-    expect(parsed.rows).toHaveLength(8);
+    expect(parsed.rows).toHaveLength(12);
     expect(parsed.rows.filter((row) => row.sign === "&")).toHaveLength(3);
-    expect(nodeTypeLabel(parsed.rows[1])).toBe("选项");
+    expect(nodeTypeLabel(parsed.rows[2])).toBe("选项");
     expect(getEditorColumns(parsed.template, parsed.rows).map((column) => column.key)).toEqual(["role", "boxPos", "content"]);
   });
 
   it("adds an option branch into an existing option group", () => {
     const parsed = importCsvText(branchSample, "71003.csv");
-    const result = insertStoryNode(parsed.template, parsed.rows, 0, "choice");
-    const option = result.rows.find((row) => row.id === "2491");
-    const dialogue = result.rows.find((row) => row.id === "2492");
+    const result = insertStoryNode(parsed.template, parsed.rows, 1, "choice");
+    const option = result.rows.find((row) => row.id === "2552");
+    const dialogue = result.rows.find((row) => row.id === "2553");
 
     expect(option).toMatchObject({
       sign: "&",
-      parent_id: "2489",
+      parent_id: "2540",
       content: "新选项",
-      skip: "2492",
+      skip: "2553",
     });
     expect(dialogue).toMatchObject({
       sign: "#",
-      parent_id: "2483",
-      skip: "2490",
+      parent_id: "2541",
+      skip: "",
       boxPos: "l",
     });
-    expect(result.rows[0].skip).toBe("2483");
+    expect(result.rows[1].skip).toBe("2541");
   });
 
   it("turns a linear node into a branch without losing the old next target", () => {

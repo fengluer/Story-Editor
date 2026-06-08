@@ -1,0 +1,12 @@
+﻿id,isBegin,sign,parent_id,bgmPath,role,roleID,boxPos,content,mp3Path,backPic,skip,failSkip,reward
+int,string,string,int,string,string,string,string,string,string,string,int,string,string
+子ID,起始点,标志,父ID,背景BGM,人物#Lang,人物ID,位置,对话内容#Lang,MP3路径,背景图片,跳转,失败跳转,奖励
+c/s,c,c,c,c,c,c,c,c,c,c,c,c,c/s
+2489,TRUE,#,,,,,l,选项前对话,,,2483,,
+2483,,&,2489,,,,,A,,,2485,,
+2485,,#,2483,,,,l,A对话,,,2490,,
+2490,,END,2485,,,,,,,,,,
+2486,,#,2483,,,,l,B对话,,,2490,,
+2488,,#,2483,,,,l,C对话,,,2490,,
+2484,,&,2489,,,,,B,,,2486,,
+2487,,&,2489,,,,,C,,,2488,,

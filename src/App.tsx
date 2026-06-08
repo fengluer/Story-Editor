@@ -4,6 +4,7 @@ import {
   ArrowRight,
   ArrowUp,
   CheckCircle2,
+  ClipboardPaste,
   Download,
   FileSpreadsheet,
   Gift,
@@ -27,6 +28,7 @@ import { loadDraft, saveDraft } from "./lib/draftStorage";
 import { readFileAsArrayBuffer, readFileAsText } from "./lib/fileReaders";
 import { applyReplacement, defaultReplaceColumns, previewReplacement } from "./lib/replace";
 import { deleteStoryNode, ensureFirstBeginFlag, getEditorColumns, insertStoryNode, nodeTypeLabel } from "./lib/rowActions";
+import { insertScriptRowsFromClipboard } from "./lib/scriptPreprocess";
 import {
   exportCsvText,
   importCsvText,
@@ -255,6 +257,29 @@ export function App() {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+    }
+  }
+
+  async function preprocessScriptFromClipboard() {
+    try {
+      const clipboardText = await navigator.clipboard?.readText();
+      if (!clipboardText?.trim()) {
+        setStatus("剪贴板为空：请先从 Excel 复制场景、角色名、正文三列");
+        return;
+      }
+
+      const result = insertScriptRowsFromClipboard(template, rows, selectedRow, clipboardText);
+      if (result.insertedCount === 0) {
+        setStatus("剪贴板没有可写入的正文行");
+        return;
+      }
+
+      setRows(result.rows);
+      selectRow(result.insertedIndex, true);
+      setHasUnsavedChanges(true);
+      setStatus(`已预处理 ${result.insertedCount} 行剧本，旁白角色留空 ${result.narratorCount} 行`);
+    } catch (error) {
+      setStatus(error instanceof Error ? `读取剪贴板失败：${error.message}` : "读取剪贴板失败");
     }
   }
 
@@ -553,6 +578,10 @@ export function App() {
           <button type="button" onClick={() => fileInputRef.current?.click()}>
             <Upload size={16} aria-hidden="true" />
             导入
+          </button>
+          <button type="button" className="script-preprocess-button" onClick={() => void preprocessScriptFromClipboard()}>
+            <ClipboardPaste size={16} aria-hidden="true" />
+            剧本预处理
           </button>
           <button type="button" onClick={exportCsv}>
             <Download size={16} aria-hidden="true" />

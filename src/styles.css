@@ -10,6 +10,7 @@
 
 * {
   box-sizing: border-box;
+  user-select: none;
 }
 
 body {
@@ -56,6 +57,11 @@ textarea {
   outline: none;
   padding: 7px 8px;
   width: 100%;
+  user-select: text;
+}
+
+[contenteditable="true"] {
+  user-select: text;
 }
 
 input:focus,
@@ -167,6 +173,19 @@ textarea:focus {
   background: #ffe7b6;
   border-color: #bd7a13;
   color: #653900;
+}
+
+.script-preprocess-button {
+  background: #e8f7ee;
+  border-color: #58ad76;
+  color: #166534;
+  font-weight: 700;
+}
+
+.script-preprocess-button:hover:not(:disabled) {
+  background: #d4f1df;
+  border-color: #328a54;
+  color: #14532d;
 }
 
 .status-strip {

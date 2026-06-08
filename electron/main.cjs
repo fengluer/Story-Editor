@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, Menu, shell } = require("electron");
 const path = require("node:path");
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -9,14 +9,16 @@ function createWindow() {
     height: 920,
     minWidth: 1100,
     minHeight: 720,
+    autoHideMenuBar: true,
     backgroundColor: "#f3f5f8",
-    title: "剧情编辑器",
+    title: "Story Editor",
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
   });
+  window.setMenuBarVisibility(false);
 
   if (isDev) {
     window.loadURL(process.env.VITE_DEV_SERVER_URL);
@@ -32,6 +34,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   createWindow();
 
   app.on("activate", () => {

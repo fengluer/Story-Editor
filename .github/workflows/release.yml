@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Release tag, for example v0.1.0
+        required: false
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/release.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve release tag
+        shell: pwsh
+        run: |
+          $package = Get-Content package.json | ConvertFrom-Json
+          $tag = "${{ github.event.inputs.tag_name }}"
+          if (-not $tag) {
+            $tag = "v$($package.version)"
+          }
+          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+
+      - name: Ensure release tag exists
+        shell: pwsh
+        run: |
+          git fetch --tags
+          $tagExists = git tag --list $env:RELEASE_TAG
+          if (-not $tagExists) {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a $env:RELEASE_TAG -m "Story Editor $env:RELEASE_TAG"
+            git push origin $env:RELEASE_TAG
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build portable package
+        run: npm run release:portable
+
+      - name: Build installer package
+        run: npm run release:installer
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Story Editor ${{ env.RELEASE_TAG }}
+          make_latest: true
+          files: |
+            release/Story-Editor-portable-latest.zip
+            release/Story-Editor-installer-latest.exe
+          body: |
+            ## Story Editor ${{ env.RELEASE_TAG }}
+
+            ### Downloads
+            - Portable: `Story-Editor-portable-latest.zip`
+            - Installer: `Story-Editor-installer-latest.exe`
+
+            ### Verification
+            This release is built automatically by GitHub Actions from the repository source.

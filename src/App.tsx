@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createEmptyRow, defaultTemplate } from "./defaultTemplate";
-import { downloadBlob, filenameWithExt } from "./lib/download";
+import { filenameWithExt, saveBlob } from "./lib/download";
 import { loadDraft, saveDraft } from "./lib/draftStorage";
 import { readFileAsArrayBuffer, readFileAsText } from "./lib/fileReaders";
 import { applyReplacement, defaultReplaceColumns, previewReplacement } from "./lib/replace";
@@ -175,6 +175,7 @@ export function App() {
     useRegex: false,
     matchCase: false,
   }));
+  const appRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const rowRefs = useRef(new Map<number, HTMLTableRowElement>());
   const nodeRefs = useRef(new Map<number, HTMLElement>());
@@ -292,6 +293,7 @@ export function App() {
   async function handleFiles(files: FileList | null) {
     const file = files?.[0];
     if (!file) {
+      restoreAppFocus();
       return;
     }
 
@@ -304,7 +306,7 @@ export function App() {
 
       setTemplate(parsed.template);
       setRows(ensureFirstBeginFlag(normalizeRows(parsed.template, parsed.rows)));
-      setSelectedRow(0);
+      selectRow(0, true, true);
       setSourceName(file.name);
       setReplaceOptions((current) => ({ ...current, columns: defaultReplaceColumns(parsed.template) }));
       setStatus(
@@ -321,6 +323,7 @@ export function App() {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+      restoreAppFocus({ focusSelectedEditor: true });
     }
   }
 
@@ -350,6 +353,8 @@ export function App() {
       );
     } catch (error) {
       setStatus(error instanceof Error ? tr(language, `读取剪贴板失败：${error.message}`, `Failed to read clipboard: ${error.message}`) : tr(language, "读取剪贴板失败", "Failed to read clipboard"));
+    } finally {
+      restoreAppFocus({ focusSelectedEditor: true });
     }
   }
 
@@ -370,6 +375,42 @@ export function App() {
   function notifySuccess(message: string) {
     setStatus(message);
     setToast(message);
+  }
+
+  function openImportPicker() {
+    let restored = false;
+    const restoreOnce = () => {
+      if (restored) {
+        return;
+      }
+      restored = true;
+      window.removeEventListener("focus", restoreOnce);
+      restoreAppFocus({ focusSelectedEditor: true });
+    };
+
+    window.addEventListener("focus", restoreOnce);
+    fileInputRef.current?.click();
+    window.setTimeout(restoreOnce, 500);
+  }
+
+  function restoreAppFocus({ focusSelectedEditor = false }: { focusSelectedEditor?: boolean } = {}) {
+    void window.storyEditorWindow?.focus();
+    window.setTimeout(() => {
+      window.focus();
+      if (isEditableElement(document.activeElement)) {
+        return;
+      }
+
+      if (focusSelectedEditor && rows.length > 0) {
+        const rowIndex = Math.max(0, Math.min(selectedRow, rows.length - 1));
+        const target = viewMode === "nodes" ? nodeRefs.current.get(rowIndex) : rowRefs.current.get(rowIndex);
+        if (focusEditableElement(target)) {
+          return;
+        }
+      }
+
+      appRef.current?.focus({ preventScroll: true });
+    }, 0);
   }
 
   function bindRowRef(rowIndex: number) {
@@ -395,7 +436,7 @@ export function App() {
   function addStoryNode(kind: StoryNodeKind) {
     const result = insertStoryNode(template, rows, selectedRow, kind);
     setRows(result.rows);
-    selectRow(result.insertedIndex, true);
+    selectRow(result.insertedIndex, true, true);
 
     if (kind === "choice") {
       setStatus(tr(language, "已添加选项和分支对话，并自动绑定父节点与汇合节点", "Added a choice and branch dialogue, with parent and merge links bound"));
@@ -411,46 +452,86 @@ export function App() {
   function addChoiceToContext(parentIndex: number) {
     const result = insertStoryNode(template, rows, parentIndex, "choice");
     setRows(result.rows);
-    selectRow(result.insertedIndex, true);
+    selectRow(result.insertedIndex, true, true);
     setStatus(tr(language, "已在当前分支组添加选项，并自动绑定分支首句", "Added a choice to the current branch group"));
   }
 
   function deleteRow(rowIndex: number) {
     const next = deleteStoryNode(rows, rowIndex);
+    const nextSelectedRow = Math.max(0, Math.min(rowIndex, next.length - 1));
     setRows(next);
-    setSelectedRow(Math.max(0, Math.min(rowIndex, next.length - 1)));
+    if (next.length > 0) {
+      selectRow(nextSelectedRow, true, true);
+    } else {
+      pendingScrollRowRef.current = null;
+      pendingEditorFocusRowRef.current = null;
+      setSelectedRow(0);
+      restoreAppFocus();
+    }
     setStatus(tr(language, "已删除节点，并自动修复线性跳转", "Deleted the node and repaired linear skip links"));
   }
 
   function clearTable() {
     if (!window.confirm(tr(language, "确认清空当前表格？所有节点都会被删除，并覆盖本地草稿。", "Clear the current table? All nodes will be deleted and the local draft will be overwritten."))) {
+      restoreAppFocus({ focusSelectedEditor: true });
       return;
     }
 
     const clearedRows: StoryRow[] = [];
     const draft = saveDraft({ sourceName, template, rows: clearedRows, selectedRow: 0 });
+    pendingScrollRowRef.current = null;
+    pendingEditorFocusRowRef.current = null;
+    rowRefs.current.clear();
+    nodeRefs.current.clear();
     setRows(clearedRows);
     setSelectedRow(0);
     setLastSavedAt(draft.savedAt);
     setHasUnsavedChanges(false);
     lastSavedSnapshotRef.current = makeDraftSnapshot({ sourceName, template, rows: clearedRows, selectedRow: 0 });
     setStatus(tr(language, `表格已清空：${formatSavedAt(draft.savedAt)}`, `Table cleared: ${formatSavedAt(draft.savedAt)}`));
+    restoreAppFocus();
   }
 
-  function exportCsv() {
-    const exportRows = ensureFirstBeginFlag(rows);
-    const blob = new Blob([exportCsvText(template, exportRows)], { type: "text/csv;charset=utf-8" });
-    downloadBlob(blob, filenameWithExt(sourceName, "csv"));
-    notifySuccess(tr(language, "CSV 已导出", "CSV exported"));
+  async function exportCsv() {
+    try {
+      const exportRows = ensureFirstBeginFlag(rows);
+      const blob = new Blob([exportCsvText(template, exportRows)], { type: "text/csv;charset=utf-8" });
+      const result = await saveBlob(blob, filenameWithExt(sourceName, "csv"), [
+        { name: "CSV", extensions: ["csv"] },
+        { name: tr(language, "所有文件", "All Files"), extensions: ["*"] },
+      ]);
+      if (result.state === "canceled") {
+        setStatus(tr(language, "CSV 导出已取消", "CSV export canceled"));
+        return;
+      }
+      notifySuccess(result.state === "saved" ? tr(language, "CSV 已保存", "CSV saved") : tr(language, "CSV 已开始下载", "CSV download started"));
+    } catch (error) {
+      setStatus(error instanceof Error ? tr(language, `CSV 导出失败：${error.message}`, `CSV export failed: ${error.message}`) : tr(language, "CSV 导出失败", "CSV export failed"));
+    } finally {
+      restoreAppFocus({ focusSelectedEditor: true });
+    }
   }
 
-  function exportXlsx() {
-    const buffer = exportWorkbookBuffer(template, ensureFirstBeginFlag(rows));
-    const blob = new Blob([buffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    downloadBlob(blob, filenameWithExt(sourceName, "xlsx"));
-    notifySuccess(tr(language, "XLSX 已导出", "XLSX exported"));
+  async function exportXlsx() {
+    try {
+      const buffer = exportWorkbookBuffer(template, ensureFirstBeginFlag(rows));
+      const blob = new Blob([buffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const result = await saveBlob(blob, filenameWithExt(sourceName, "xlsx"), [
+        { name: "Excel Workbook", extensions: ["xlsx"] },
+        { name: tr(language, "所有文件", "All Files"), extensions: ["*"] },
+      ]);
+      if (result.state === "canceled") {
+        setStatus(tr(language, "XLSX 导出已取消", "XLSX export canceled"));
+        return;
+      }
+      notifySuccess(result.state === "saved" ? tr(language, "XLSX 已保存", "XLSX saved") : tr(language, "XLSX 已开始下载", "XLSX download started"));
+    } catch (error) {
+      setStatus(error instanceof Error ? tr(language, `XLSX 导出失败：${error.message}`, `XLSX export failed: ${error.message}`) : tr(language, "XLSX 导出失败", "XLSX export failed"));
+    } finally {
+      restoreAppFocus({ focusSelectedEditor: true });
+    }
   }
 
   function handleSaveTemplate() {
@@ -487,11 +568,13 @@ export function App() {
 
   function removeColumn(key: string) {
     if (!window.confirm(tr(language, `删除字段 ${key}？`, `Delete field ${key}?`))) {
+      restoreAppFocus();
       return;
     }
     setTemplate((current) => ({ ...current, columns: current.columns.filter((column) => column.key !== key) }));
     setRows((current) => removeColumnFromRows(current, key));
     setReplaceOptions((current) => ({ ...current, columns: current.columns.filter((columnKey) => columnKey !== key) }));
+    restoreAppFocus({ focusSelectedEditor: true });
   }
 
   function updateColumn(index: number, patch: Partial<ColumnTemplate>) {
@@ -632,14 +715,16 @@ export function App() {
     if (node.id) {
       setNodePositions((current) => ({ ...current, [node.id]: position }));
     }
-    selectRow(insertedIndex, true);
+    selectRow(insertedIndex, true, true);
     setStatus(tr(language, "已拖出新节点，尚未自动绑定连线", "Created a detached node without automatic links"));
   }
 
   return (
     <main
+      ref={appRef}
       className={`app ${dragging ? "is-dragging" : ""}`}
       data-drop-label={tr(language, "释放文件导入", "Drop file to import")}
+      tabIndex={-1}
       onDragOver={(event) => {
         event.preventDefault();
         setDragging(true);
@@ -661,7 +746,7 @@ export function App() {
         </div>
         <div className="toolbar-actions">
           <input ref={fileInputRef} hidden type="file" accept=".csv,.xlsx,.xls" onChange={(event) => void handleFiles(event.target.files)} />
-          <button type="button" onClick={() => fileInputRef.current?.click()}>
+          <button type="button" onClick={openImportPicker}>
             <Upload size={16} aria-hidden="true" />
             {tr(language, "导入", "Import")}
           </button>
@@ -669,11 +754,11 @@ export function App() {
             <ClipboardPaste size={16} aria-hidden="true" />
             {tr(language, "剧本预处理", "Preprocess")}
           </button>
-          <button type="button" onClick={exportCsv}>
+          <button type="button" onClick={() => void exportCsv()}>
             <Download size={16} aria-hidden="true" />
             CSV
           </button>
-          <button type="button" onClick={exportXlsx}>
+          <button type="button" onClick={() => void exportXlsx()}>
             <FileSpreadsheet size={16} aria-hidden="true" />
             XLSX
           </button>
@@ -1652,15 +1737,15 @@ async function readClipboardText(): Promise<string> {
   throw new Error("Clipboard reading is not supported in this environment");
 }
 
-function focusEditableElement(container: HTMLElement | undefined) {
+function focusEditableElement(container: HTMLElement | undefined): boolean {
   if (!container) {
-    return;
+    return false;
   }
 
   window.focus();
   const editable = container.querySelector<HTMLTextAreaElement | HTMLInputElement>('textarea, input:not([type="checkbox"])');
   if (!editable) {
-    return;
+    return false;
   }
 
   window.requestAnimationFrame(() => {
@@ -1670,6 +1755,20 @@ function focusEditableElement(container: HTMLElement | undefined) {
       editable.setSelectionRange(end, end);
     }
   });
+  return true;
+}
+
+function isEditableElement(element: Element | null): boolean {
+  if (!element) {
+    return false;
+  }
+  if (element instanceof HTMLTextAreaElement) {
+    return true;
+  }
+  if (element instanceof HTMLInputElement) {
+    return element.type !== "checkbox";
+  }
+  return element instanceof HTMLElement && element.isContentEditable;
 }
 
 function isCellNeeded(row: StoryRow, key: string): boolean {

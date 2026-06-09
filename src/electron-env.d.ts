@@ -1,9 +1,30 @@
 export {};
 
 declare global {
+  type StoryEditorSaveFileResult = {
+    saved: boolean;
+    canceled?: boolean;
+    filePath?: string;
+  };
+
+  type StoryEditorFileFilter = {
+    name: string;
+    extensions: string[];
+  };
+
   interface Window {
     storyEditorClipboard?: {
       readText: () => Promise<string>;
+    };
+    storyEditorFile?: {
+      save: (options: {
+        fileName: string;
+        data: ArrayBuffer;
+        filters?: StoryEditorFileFilter[];
+      }) => Promise<StoryEditorSaveFileResult>;
+    };
+    storyEditorWindow?: {
+      focus: () => Promise<boolean>;
     };
   }
 }

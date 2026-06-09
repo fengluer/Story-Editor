@@ -36,6 +36,7 @@ import {
   removeColumnFromRows,
   updateColumnKey,
   validateContentLength,
+  validateRightSideRolePosition,
   validateStory,
 } from "./lib/storyTable";
 import { loadSavedTemplate, saveTemplate } from "./lib/templateStorage";
@@ -49,6 +50,7 @@ type ViewMode = "table" | "nodes";
 const AUTO_SAVE_INTERVAL_MS = 3 * 60 * 1000;
 const DEFAULT_CHARACTER_LIMIT = 40;
 const CHARACTER_LIMIT_STORAGE_KEY = "story-editor-character-limit";
+const RIGHT_SIDE_ROLE_STORAGE_KEY = "story-editor-right-side-role-keyword";
 const NODE_POSITION_STORAGE_PREFIX = "story-editor.node-positions";
 const GRAPH_NODE_WIDTH = 320;
 const GRAPH_NODE_HEIGHT = 260;
@@ -123,9 +125,18 @@ function initialStatus(): string {
   return draft ? `已恢复上次草稿，保存于 ${formatSavedAt(draft.savedAt)}` : "默认模板已就绪";
 }
 
-function initialCharacterLimit(): number {
-  const saved = Number(window.localStorage.getItem(CHARACTER_LIMIT_STORAGE_KEY));
+function initialCharacterLimit(): number | null {
+  const raw = window.localStorage.getItem(CHARACTER_LIMIT_STORAGE_KEY);
+  if (raw === "") {
+    return null;
+  }
+
+  const saved = Number(raw);
   return Number.isFinite(saved) && saved > 0 ? saved : DEFAULT_CHARACTER_LIMIT;
+}
+
+function initialRightSideRoleKeyword(): string {
+  return window.localStorage.getItem(RIGHT_SIDE_ROLE_STORAGE_KEY) ?? "";
 }
 
 function initialNodePositions(): Record<string, NodePosition> {
@@ -144,6 +155,7 @@ export function App() {
   const [undoRows, setUndoRows] = useState<StoryRow[] | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [characterLimit, setCharacterLimit] = useState(() => initialCharacterLimit());
+  const [rightSideRoleKeyword, setRightSideRoleKeyword] = useState(() => initialRightSideRoleKeyword());
   const [nodePositions, setNodePositions] = useState<Record<string, NodePosition>>(() => initialNodePositions());
   const [replaceOptions, setReplaceOptions] = useState<ReplaceOptions>(() => ({
     find: "",
@@ -159,8 +171,16 @@ export function App() {
 
   const structureIssues = useMemo(() => validateStory(template, rows), [template, rows]);
   const characterIssues = useMemo(() => validateContentLength(rows, characterLimit), [rows, characterLimit]);
-  const issues = useMemo(() => [...structureIssues, ...characterIssues], [characterIssues, structureIssues]);
+  const rightSideRoleIssues = useMemo(() => validateRightSideRolePosition(rows, rightSideRoleKeyword), [rightSideRoleKeyword, rows]);
+  const issues = useMemo(
+    () => [...structureIssues, ...characterIssues, ...rightSideRoleIssues],
+    [characterIssues, rightSideRoleIssues, structureIssues],
+  );
   const overLimitRows = useMemo(() => new Set(characterIssues.map((issue) => issue.rowIndex)), [characterIssues]);
+  const highlightRows = useMemo(
+    () => new Set([...characterIssues, ...rightSideRoleIssues].map((issue) => issue.rowIndex).filter((rowIndex) => rowIndex >= 0)),
+    [characterIssues, rightSideRoleIssues],
+  );
   const editorColumns = useMemo(() => getEditorColumns(template, rows), [template, rows]);
   const dialogueConfigColumns = useMemo(() => getDialogueConfigColumns(template), [template]);
   const selected = rows[selectedRow] ?? createEmptyRow(template);
@@ -191,8 +211,12 @@ export function App() {
   }, [hasUnsavedChanges, rows, selectedRow, sourceName, template]);
 
   useEffect(() => {
-    window.localStorage.setItem(CHARACTER_LIMIT_STORAGE_KEY, String(characterLimit));
+    window.localStorage.setItem(CHARACTER_LIMIT_STORAGE_KEY, characterLimit === null ? "" : String(characterLimit));
   }, [characterLimit]);
+
+  useEffect(() => {
+    window.localStorage.setItem(RIGHT_SIDE_ROLE_STORAGE_KEY, rightSideRoleKeyword);
+  }, [rightSideRoleKeyword]);
 
   useEffect(() => {
     setNodePositions(loadNodePositions(sourceName));
@@ -262,7 +286,7 @@ export function App() {
 
   async function preprocessScriptFromClipboard() {
     try {
-      const clipboardText = await navigator.clipboard?.readText();
+      const clipboardText = await readClipboardText();
       if (!clipboardText?.trim()) {
         setStatus("剪贴板为空：请先从 Excel 复制场景、角色名、正文三列");
         return;
@@ -466,8 +490,15 @@ export function App() {
   }
 
   function updateCharacterLimit(value: string) {
+    if (value.trim() === "") {
+      setCharacterLimit(null);
+      return;
+    }
+
     const next = Number(value);
-    setCharacterLimit(Number.isFinite(next) && next > 0 ? Math.floor(next) : DEFAULT_CHARACTER_LIMIT);
+    if (Number.isFinite(next) && next > 0) {
+      setCharacterLimit(Math.floor(next));
+    }
   }
 
   function jumpToNodeId(id: string) {
@@ -621,7 +652,8 @@ export function App() {
         <span>{rows.length} 个节点</span>
         <span>显示 {editorColumns.length} 项</span>
         <span>导出 {template.columns.length} 列</span>
-        <span>字数上限 {characterLimit}</span>
+        <span>字数上限 {characterLimit ?? "不校验"}</span>
+        {rightSideRoleKeyword.trim() && <span>右侧人物 {rightSideRoleKeyword.trim()}</span>}
         <span className={hasUnsavedChanges ? "bad" : "good"}>{hasUnsavedChanges ? "未保存" : lastSavedAt ? `已保存 ${formatSavedAt(lastSavedAt)}` : "未生成草稿"}</span>
         <span className={issues.some((issue) => issue.level === "error") ? "bad" : "good"}>
           {issues.length === 0 ? "无校验问题" : `${issues.length} 个校验提示`}
@@ -658,7 +690,7 @@ export function App() {
                         <tr
                           key={`${row.id || "row"}-${rowIndex}`}
                           ref={bindRowRef(rowIndex)}
-                          className={rowClassName(selectedRow === rowIndex, overLimitRows.has(rowIndex))}
+                          className={rowClassName(selectedRow === rowIndex, highlightRows.has(rowIndex))}
                         >
                           <td className="row-head">
                             <button type="button" title="选中节点" className="row-number" onClick={() => selectRow(rowIndex)}>
@@ -696,6 +728,7 @@ export function App() {
               rows={rows}
               selectedRow={selectedRow}
               graphEdges={graphEdges}
+              highlightRows={highlightRows}
               nodePositions={nodePositions}
               overLimitRows={overLimitRows}
               characterLimit={characterLimit}
@@ -881,9 +914,18 @@ export function App() {
             </div>
             <label className="limit-field">
               每行字数上限
-              <input min={1} type="number" value={characterLimit} onChange={(event) => updateCharacterLimit(event.target.value)} />
+              <input min={1} placeholder="留空不校验" type="number" value={characterLimit ?? ""} onChange={(event) => updateCharacterLimit(event.target.value)} />
             </label>
-            {characterIssues.length > 0 && <p className="panel-note">{characterIssues.length} 行超过 {characterLimit} 字，已在表格/节点中浅红标出。</p>}
+            <label className="limit-field">
+              人物靠右校验
+              <input placeholder="$player，留空不校验" value={rightSideRoleKeyword} onChange={(event) => setRightSideRoleKeyword(event.target.value)} />
+            </label>
+            {characterIssues.length > 0 && characterLimit !== null && (
+              <p className="panel-note">{characterIssues.length} 行超过 {characterLimit} 字，已在表格/节点中浅红标出。</p>
+            )}
+            {rightSideRoleIssues.length > 0 && (
+              <p className="panel-note">{rightSideRoleIssues.length} 行人物包含 {rightSideRoleKeyword.trim()} 但位置不是右侧，已在表格/节点中浅红标出。</p>
+            )}
             <div className="issue-list">
               {issues.length === 0 ? (
                 <p className="empty">结构看起来正常</p>
@@ -998,6 +1040,7 @@ function NodeGraphView({
   rows,
   selectedRow,
   graphEdges,
+  highlightRows,
   nodePositions,
   overLimitRows,
   characterLimit,
@@ -1014,9 +1057,10 @@ function NodeGraphView({
   rows: StoryRow[];
   selectedRow: number;
   graphEdges: GraphEdge[];
+  highlightRows: Set<number>;
   nodePositions: Record<string, NodePosition>;
   overLimitRows: Set<number>;
-  characterLimit: number;
+  characterLimit: number | null;
   bindNodeRef: (rowIndex: number) => (element: HTMLElement | null) => void;
   onClearLink: (rowIndex: number, kind: GraphLinkKind) => void;
   onChange: (rowIndex: number, key: string, value: string) => void;
@@ -1225,13 +1269,14 @@ function NodeGraphView({
           {rows.map((row, rowIndex) => {
             const isSelected = selectedRow === rowIndex;
             const isOverLimit = overLimitRows.has(rowIndex);
+            const isHighlighted = highlightRows.has(rowIndex);
             const position = getNodePosition(row, rowIndex, nodePositions);
 
             return (
               <article
                 key={`${row.id || "node"}-${rowIndex}`}
                 ref={bindNodeRef(rowIndex)}
-                className={`story-node graph-node ${nodeKindClass(row)}${isSelected ? " selected" : ""}${isOverLimit ? " over-limit" : ""}`}
+                className={`story-node graph-node ${nodeKindClass(row)}${isSelected ? " selected" : ""}${isHighlighted ? " over-limit" : ""}`}
                 data-node-index={rowIndex}
                 style={{ left: position.x, top: position.y }}
                 onClick={() => onSelect(rowIndex)}
@@ -1304,7 +1349,7 @@ function NodeContentEditor({
 }: {
   row: StoryRow;
   rowIndex: number;
-  characterLimit: number;
+  characterLimit: number | null;
   isOverLimit: boolean;
   onChange: (rowIndex: number, key: string, value: string) => void;
 }) {
@@ -1332,7 +1377,7 @@ function NodeContentEditor({
           onChange={(event) => onChange(rowIndex, "content", event.target.value)}
         />
         <span className={isOverLimit ? "over-limit-count" : undefined}>
-          {countCharacters(row.content ?? "")} / {characterLimit}
+          {formatCharacterCount(row.content ?? "", characterLimit)}
         </span>
       </label>
       {row.sign !== "&" && (
@@ -1413,7 +1458,7 @@ function EditableCell({
   rowIndex: number;
   onFocus: (rowIndex: number) => void;
   onChange: (rowIndex: number, key: string, value: string) => void;
-  characterLimit: number;
+  characterLimit: number | null;
   isOverLimit: boolean;
 }) {
   if (!isCellNeeded(row, column.key)) {
@@ -1441,7 +1486,7 @@ function EditableCell({
           onChange={(event) => onChange(rowIndex, column.key, event.target.value)}
         />
         <span className={isOverLimit ? "over-limit-count" : undefined}>
-          {countCharacters(row[column.key] ?? "")} / {characterLimit}
+          {formatCharacterCount(row[column.key] ?? "", characterLimit)}
         </span>
       </label>
     );
@@ -1490,6 +1535,18 @@ function handleTextareaPaste(event: ClipboardEvent<HTMLTextAreaElement>, current
     target.selectionStart = selectionStart + cleaned.length;
     target.selectionEnd = selectionStart + cleaned.length;
   });
+}
+
+async function readClipboardText(): Promise<string> {
+  if (window.storyEditorClipboard) {
+    return window.storyEditorClipboard.readText();
+  }
+
+  if (navigator.clipboard?.readText) {
+    return navigator.clipboard.readText();
+  }
+
+  throw new Error("当前环境不支持读取剪贴板");
 }
 
 function isCellNeeded(row: StoryRow, key: string): boolean {
@@ -1775,6 +1832,11 @@ function nextColumnKey(template: StoryTemplate): string {
     key = `field_${index}`;
   }
   return key;
+}
+
+function formatCharacterCount(value: string, limit: number | null): string {
+  const count = countCharacters(value);
+  return limit === null ? String(count) : `${count} / ${limit}`;
 }
 
 function countCharacters(value: string): number {

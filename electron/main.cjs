@@ -1,7 +1,8 @@
-const { app, BrowserWindow, Menu, shell } = require("electron");
+const { app, BrowserWindow, Menu, clipboard, ipcMain, shell } = require("electron");
 const path = require("node:path");
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
+const READ_CLIPBOARD_CHANNEL = "story-editor:read-clipboard-text";
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -15,6 +16,7 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, "preload.cjs"),
       sandbox: true,
     },
   });
@@ -35,6 +37,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
+  ipcMain.handle(READ_CLIPBOARD_CHANNEL, () => clipboard.readText());
   createWindow();
 
   app.on("activate", () => {

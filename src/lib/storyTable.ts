@@ -126,8 +126,8 @@ export function validateStory(template: StoryTemplate, rows: StoryRow[]): Valida
   return issues;
 }
 
-export function validateContentLength(rows: StoryRow[], maxCharacters: number): ValidationIssue[] {
-  if (!Number.isFinite(maxCharacters) || maxCharacters <= 0) {
+export function validateContentLength(rows: StoryRow[], maxCharacters: number | null | undefined): ValidationIssue[] {
+  if (typeof maxCharacters !== "number" || !Number.isFinite(maxCharacters) || maxCharacters <= 0) {
     return [];
   }
 
@@ -144,6 +144,29 @@ export function validateContentLength(rows: StoryRow[], maxCharacters: number): 
         rowIndex,
         columnKey: "content",
         message: `正文 ${characterCount} 字，超过上限 ${maxCharacters} 字`,
+      },
+    ];
+  });
+}
+
+export function validateRightSideRolePosition(rows: StoryRow[], roleKeyword: string): ValidationIssue[] {
+  const keyword = roleKeyword.trim();
+  if (!keyword) {
+    return [];
+  }
+
+  return rows.flatMap((row, rowIndex) => {
+    const role = row.role ?? "";
+    if (!role.includes(keyword) || row.boxPos === "r") {
+      return [];
+    }
+
+    return [
+      {
+        level: "warning" as const,
+        rowIndex,
+        columnKey: "boxPos",
+        message: `人物包含 ${keyword}，位置应为右侧`,
       },
     ];
   });

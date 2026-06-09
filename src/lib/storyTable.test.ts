@@ -3,7 +3,15 @@ import sample from "../__fixtures__/100101-1.csv?raw";
 import branchSample from "../__fixtures__/71003.csv?raw";
 import { applyReplacement, defaultReplaceColumns } from "./replace";
 import { exportWorkbookBuffer, importWorkbookBuffer } from "./workbook";
-import { buildMatrix, exportCsvText, importCsvText, importMatrix, validateContentLength, validateStory } from "./storyTable";
+import {
+  buildMatrix,
+  exportCsvText,
+  importCsvText,
+  importMatrix,
+  validateContentLength,
+  validateRightSideRolePosition,
+  validateStory,
+} from "./storyTable";
 import { defaultTemplate } from "../defaultTemplate";
 
 const expectedKeys = [
@@ -113,6 +121,26 @@ describe("story table format", () => {
 
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ rowIndex: 1, columnKey: "content" });
+  });
+
+  it("skips content length validation when the limit is empty", () => {
+    const issues = validateContentLength([{ id: "1", sign: "#", content: "very long content" }], null);
+
+    expect(issues).toEqual([]);
+  });
+
+  it("reports configured roles that are not on the right side", () => {
+    const issues = validateRightSideRolePosition(
+      [
+        { id: "1", sign: "#", role: "$player", boxPos: "l", content: "left" },
+        { id: "2", sign: "#", role: "$player", boxPos: "r", content: "right" },
+        { id: "3", sign: "#", role: "$npc", boxPos: "l", content: "other" },
+      ],
+      "$player",
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ rowIndex: 0, columnKey: "boxPos" });
   });
 
   it("does not validate parent references for begin nodes", () => {

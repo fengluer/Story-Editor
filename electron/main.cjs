@@ -37,7 +37,15 @@ function createWindow() {
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
-  ipcMain.handle(READ_CLIPBOARD_CHANNEL, () => clipboard.readText());
+  ipcMain.handle(READ_CLIPBOARD_CHANNEL, (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (window) {
+      window.show();
+      window.focus();
+      window.webContents.focus();
+    }
+    return clipboard.readText();
+  });
   createWindow();
 
   app.on("activate", () => {

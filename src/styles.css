@@ -82,7 +82,7 @@ textarea:focus {
   background: rgba(46, 140, 163, 0.18);
   border: 2px dashed #2e8ca3;
   color: #0c5d74;
-  content: "释放文件导入";
+  content: attr(data-drop-label);
   display: flex;
   font-size: 24px;
   font-weight: 700;
@@ -160,6 +160,33 @@ textarea:focus {
   border-color: #b9c7d5;
   color: #0c5d74;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.language-toggle {
+  padding-left: 7px;
+}
+
+.language-toggle > svg {
+  color: #607086;
+  margin-left: 2px;
+}
+
+.toast {
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+  font-weight: 700;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 11px 14px;
+  position: fixed;
+  right: 18px;
+  top: 84px;
+  z-index: 30;
+}
+
+.toast.success {
+  background: #e9f8ee;
+  border: 1px solid #82c89a;
+  color: #176236;
 }
 
 .dialogue-button {
@@ -291,12 +318,25 @@ textarea:focus {
   background: #edf8fb;
 }
 
-.story-table tbody tr.over-limit td {
+.story-table tbody tr.length-warning td {
   background: #fff1f2;
 }
 
-.story-table tbody tr.selected.over-limit td {
+.story-table tbody tr.selected.length-warning td {
   background: #ffe4e8;
+}
+
+.story-table tbody tr.position-warning td {
+  background: #fff8db;
+}
+
+.story-table tbody tr.selected.position-warning td {
+  background: #fff0b8;
+}
+
+.story-table tbody tr.length-warning.position-warning td {
+  background: #fff1f2;
+  box-shadow: inset 4px 0 0 #d8a318;
 }
 
 .story-table td input,
@@ -628,6 +668,16 @@ textarea:focus {
   border-color: #d49a9a;
 }
 
+.issue.length {
+  background: #fff5f6;
+  border-color: #e0a0a8;
+}
+
+.issue.position {
+  background: #fff9e6;
+  border-color: #d8b64c;
+}
+
 .issue strong {
   font-size: 12px;
 }
@@ -797,9 +847,21 @@ textarea:focus {
   box-shadow: 0 0 0 2px rgba(46, 140, 163, 0.16);
 }
 
-.story-node.over-limit {
+.story-node.length-warning {
   background: #fff4f5;
   border-color: #e9a4aa;
+}
+
+.story-node.position-warning {
+  background: #fff9e8;
+  border-color: #d8b64c;
+}
+
+.story-node.length-warning.position-warning {
+  background: #fff4f5;
+  box-shadow:
+    inset 5px 0 0 #d8a318,
+    0 0 0 1px rgba(216, 163, 24, 0.24);
 }
 
 .story-node-head {

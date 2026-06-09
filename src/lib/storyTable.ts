@@ -2,6 +2,8 @@ import { defaultTemplate } from "../defaultTemplate";
 import type { ColumnTemplate, ParsedStory, StoryRow, StoryTemplate, ValidationIssue } from "../types";
 import { parseCsv, stringifyCsv } from "./csv";
 
+export type ValidationLanguage = "zh" | "en";
+
 export function importCsvText(text: string, sourceName = "导入剧情表"): ParsedStory {
   return importMatrix(parseCsv(text), sourceName);
 }
@@ -89,7 +91,7 @@ export function removeColumnFromRows(rows: StoryRow[], key: string): StoryRow[] 
   });
 }
 
-export function validateStory(template: StoryTemplate, rows: StoryRow[]): ValidationIssue[] {
+export function validateStory(template: StoryTemplate, rows: StoryRow[], language: ValidationLanguage = "zh"): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const idColumn = findColumn(template, "id");
   const idCounts = new Map<string, number[]>();
@@ -98,7 +100,7 @@ export function validateStory(template: StoryTemplate, rows: StoryRow[]): Valida
   rows.forEach((row, rowIndex) => {
     const id = valueOf(row, idColumn);
     if (!id) {
-      issues.push({ level: "error", rowIndex, columnKey: "id", message: "节点 ID 为空" });
+      issues.push({ level: "error", rowIndex, columnKey: "id", message: messageOf(language, "节点 ID 为空", "Node ID is empty") });
       return;
     }
     idSet.add(id);
@@ -108,25 +110,25 @@ export function validateStory(template: StoryTemplate, rows: StoryRow[]): Valida
   idCounts.forEach((indexes, id) => {
     if (indexes.length > 1) {
       indexes.forEach((rowIndex) => {
-        issues.push({ level: "error", rowIndex, columnKey: "id", message: `节点 ID 重复：${id}` });
+        issues.push({ level: "error", rowIndex, columnKey: "id", message: messageOf(language, `节点 ID 重复：${id}`, `Duplicate node ID: ${id}`) });
       });
     }
   });
 
   const endRows = rows.filter((row) => valueOf(row, findColumn(template, "sign")) === "END");
   if (rows.length > 0 && endRows.length === 0) {
-    issues.push({ level: "warning", rowIndex: -1, columnKey: "sign", message: "未找到 END 结束节点" });
+    issues.push({ level: "warning", rowIndex: -1, columnKey: "sign", message: messageOf(language, "未找到 END 结束节点", "No END node found") });
   }
 
   rows.forEach((row, rowIndex) => {
-    validateRowReferences(template, row, rowIndex, idSet, issues);
-    validateRowShape(template, row, rowIndex, issues);
+    validateRowReferences(template, row, rowIndex, idSet, issues, language);
+    validateRowShape(template, row, rowIndex, issues, language);
   });
 
   return issues;
 }
 
-export function validateContentLength(rows: StoryRow[], maxCharacters: number | null | undefined): ValidationIssue[] {
+export function validateContentLength(rows: StoryRow[], maxCharacters: number | null | undefined, language: ValidationLanguage = "zh"): ValidationIssue[] {
   if (typeof maxCharacters !== "number" || !Number.isFinite(maxCharacters) || maxCharacters <= 0) {
     return [];
   }
@@ -143,13 +145,14 @@ export function validateContentLength(rows: StoryRow[], maxCharacters: number | 
         level: "warning" as const,
         rowIndex,
         columnKey: "content",
-        message: `正文 ${characterCount} 字，超过上限 ${maxCharacters} 字`,
+        kind: "length" as const,
+        message: messageOf(language, `正文 ${characterCount} 字，超过上限 ${maxCharacters} 字`, `Content has ${characterCount} characters, above the limit of ${maxCharacters}`),
       },
     ];
   });
 }
 
-export function validateRightSideRolePosition(rows: StoryRow[], roleKeyword: string): ValidationIssue[] {
+export function validateRightSideRolePosition(rows: StoryRow[], roleKeyword: string, language: ValidationLanguage = "zh"): ValidationIssue[] {
   const keyword = roleKeyword.trim();
   if (!keyword) {
     return [];
@@ -166,7 +169,8 @@ export function validateRightSideRolePosition(rows: StoryRow[], roleKeyword: str
         level: "warning" as const,
         rowIndex,
         columnKey: "boxPos",
-        message: `人物包含 ${keyword}，位置应为右侧`,
+        kind: "position" as const,
+        message: messageOf(language, `人物包含 ${keyword}，位置应为右侧`, `Role contains ${keyword}; position should be right`),
       },
     ];
   });
@@ -178,6 +182,7 @@ function validateRowReferences(
   rowIndex: number,
   idSet: Set<string>,
   issues: ValidationIssue[],
+  language: ValidationLanguage,
 ) {
   const id = valueOf(row, findColumn(template, "id"));
   const skip = valueOf(row, findColumn(template, "skip"));
@@ -186,17 +191,17 @@ function validateRowReferences(
   const isBegin = valueOf(row, findColumn(template, "isBegin")) === "TRUE";
 
   if (skip && !idSet.has(skip)) {
-    issues.push({ level: "warning", rowIndex, columnKey: "skip", message: `跳转目标不存在：${id} -> ${skip}` });
+    issues.push({ level: "warning", rowIndex, columnKey: "skip", message: messageOf(language, `跳转目标不存在：${id} -> ${skip}`, `Skip target does not exist: ${id} -> ${skip}`) });
   }
   if (failSkip && !idSet.has(failSkip)) {
-    issues.push({ level: "warning", rowIndex, columnKey: "failSkip", message: `失败跳转目标不存在：${failSkip}` });
+    issues.push({ level: "warning", rowIndex, columnKey: "failSkip", message: messageOf(language, `失败跳转目标不存在：${failSkip}`, `Fail-skip target does not exist: ${failSkip}`) });
   }
   if (!isBegin && parentId && isLikelyNodeId(parentId) && !idSet.has(parentId)) {
-    issues.push({ level: "warning", rowIndex, columnKey: "parent_id", message: `父节点不存在：${parentId}` });
+    issues.push({ level: "warning", rowIndex, columnKey: "parent_id", message: messageOf(language, `父节点不存在：${parentId}`, `Parent node does not exist: ${parentId}`) });
   }
 }
 
-function validateRowShape(template: StoryTemplate, row: StoryRow, rowIndex: number, issues: ValidationIssue[]) {
+function validateRowShape(template: StoryTemplate, row: StoryRow, rowIndex: number, issues: ValidationIssue[], language: ValidationLanguage) {
   const sign = valueOf(row, findColumn(template, "sign"));
   const boxPos = valueOf(row, findColumn(template, "boxPos"));
   const content = valueOf(row, findColumn(template, "content"));
@@ -204,16 +209,16 @@ function validateRowShape(template: StoryTemplate, row: StoryRow, rowIndex: numb
   const isBegin = valueOf(row, findColumn(template, "isBegin"));
 
   if (boxPos && !["l", "r"].includes(boxPos)) {
-    issues.push({ level: "warning", rowIndex, columnKey: "boxPos", message: `位置建议为 l 或 r：${boxPos}` });
+    issues.push({ level: "warning", rowIndex, columnKey: "boxPos", message: messageOf(language, `位置建议为 l 或 r：${boxPos}`, `Position should be l or r: ${boxPos}`) });
   }
   if (isBegin && isBegin !== "TRUE") {
-    issues.push({ level: "warning", rowIndex, columnKey: "isBegin", message: "起始点建议填写 TRUE 或留空" });
+    issues.push({ level: "warning", rowIndex, columnKey: "isBegin", message: messageOf(language, "起始点建议填写 TRUE 或留空", "Begin flag should be TRUE or empty") });
   }
   if (sign === "#" && !content) {
-    issues.push({ level: "warning", rowIndex, columnKey: "content", message: "普通剧情节点内容为空" });
+    issues.push({ level: "warning", rowIndex, columnKey: "content", message: messageOf(language, "普通剧情节点内容为空", "Dialogue node content is empty") });
   }
   if (sign === "END" && (content || skip)) {
-    issues.push({ level: "warning", rowIndex, columnKey: "sign", message: "END 节点通常不填写内容或跳转" });
+    issues.push({ level: "warning", rowIndex, columnKey: "sign", message: messageOf(language, "END 节点通常不填写内容或跳转", "END nodes usually do not have content or skip targets") });
   }
 }
 
@@ -235,4 +240,8 @@ function valueOf(row: StoryRow, column?: ColumnTemplate): string {
 
 function countCharacters(value: string): number {
   return Array.from(value).length;
+}
+
+function messageOf(language: ValidationLanguage, zh: string, en: string): string {
+  return language === "en" ? en : zh;
 }

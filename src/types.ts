@@ -18,6 +18,7 @@ export type ValidationIssue = {
   level: "warning" | "error";
   rowIndex: number;
   columnKey?: string;
+  kind?: "length" | "position";
   message: string;
 };
 

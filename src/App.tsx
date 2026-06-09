@@ -9,6 +9,7 @@ import {
   FileSpreadsheet,
   Gift,
   GitBranch,
+  Languages,
   Octagon,
   MessageSquare,
   Network,
@@ -27,7 +28,7 @@ import { downloadBlob, filenameWithExt } from "./lib/download";
 import { loadDraft, saveDraft } from "./lib/draftStorage";
 import { readFileAsArrayBuffer, readFileAsText } from "./lib/fileReaders";
 import { applyReplacement, defaultReplaceColumns, previewReplacement } from "./lib/replace";
-import { deleteStoryNode, ensureFirstBeginFlag, getEditorColumns, insertStoryNode, nodeTypeLabel } from "./lib/rowActions";
+import { deleteStoryNode, ensureFirstBeginFlag, getEditorColumns, insertStoryNode, nodeTypeLabel, type StoryEditorLanguage } from "./lib/rowActions";
 import { insertScriptRowsFromClipboard } from "./lib/scriptPreprocess";
 import {
   exportCsvText,
@@ -46,10 +47,12 @@ import type { ColumnTemplate, ReplaceOptions, StoryRow, StoryTemplate } from "./
 
 type StoryNodeKind = "dialogue" | "reward" | "choice" | "end";
 type ViewMode = "table" | "nodes";
+type AppLanguage = StoryEditorLanguage;
 
 const AUTO_SAVE_INTERVAL_MS = 3 * 60 * 1000;
 const DEFAULT_CHARACTER_LIMIT = 40;
 const CHARACTER_LIMIT_STORAGE_KEY = "story-editor-character-limit";
+const LANGUAGE_STORAGE_KEY = "story-editor-language";
 const RIGHT_SIDE_ROLE_STORAGE_KEY = "story-editor-right-side-role-keyword";
 const NODE_POSITION_STORAGE_PREFIX = "story-editor.node-positions";
 const GRAPH_NODE_WIDTH = 320;
@@ -116,13 +119,19 @@ function initialSourceName(): string {
   return loadDraft()?.sourceName ?? "story.csv";
 }
 
+function initialLanguage(): AppLanguage {
+  return window.localStorage.getItem(LANGUAGE_STORAGE_KEY) === "en" ? "en" : "zh";
+}
+
 function initialSelectedRow(): number {
   return loadDraft()?.selectedRow ?? 0;
 }
 
-function initialStatus(): string {
+function initialStatus(language: AppLanguage): string {
   const draft = loadDraft();
-  return draft ? `已恢复上次草稿，保存于 ${formatSavedAt(draft.savedAt)}` : "默认模板已就绪";
+  return draft
+    ? tr(language, `已恢复上次草稿，保存于 ${formatSavedAt(draft.savedAt)}`, `Restored last draft, saved at ${formatSavedAt(draft.savedAt)}`)
+    : tr(language, "默认模板已就绪", "Default template is ready");
 }
 
 function initialCharacterLimit(): number | null {
@@ -148,7 +157,9 @@ export function App() {
   const [rows, setRows] = useState<StoryRow[]>(() => initialRows());
   const [selectedRow, setSelectedRow] = useState(() => initialSelectedRow());
   const [sourceName, setSourceName] = useState(() => initialSourceName());
-  const [status, setStatus] = useState(() => initialStatus());
+  const [language, setLanguage] = useState<AppLanguage>(() => initialLanguage());
+  const [status, setStatus] = useState(() => initialStatus(initialLanguage()));
+  const [toast, setToast] = useState("");
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(() => loadDraft()?.savedAt ?? null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -168,19 +179,17 @@ export function App() {
   const rowRefs = useRef(new Map<number, HTMLTableRowElement>());
   const nodeRefs = useRef(new Map<number, HTMLElement>());
   const pendingScrollRowRef = useRef<number | null>(null);
+  const pendingEditorFocusRowRef = useRef<number | null>(null);
 
-  const structureIssues = useMemo(() => validateStory(template, rows), [template, rows]);
-  const characterIssues = useMemo(() => validateContentLength(rows, characterLimit), [rows, characterLimit]);
-  const rightSideRoleIssues = useMemo(() => validateRightSideRolePosition(rows, rightSideRoleKeyword), [rightSideRoleKeyword, rows]);
+  const structureIssues = useMemo(() => validateStory(template, rows, language), [language, template, rows]);
+  const characterIssues = useMemo(() => validateContentLength(rows, characterLimit, language), [language, rows, characterLimit]);
+  const rightSideRoleIssues = useMemo(() => validateRightSideRolePosition(rows, rightSideRoleKeyword, language), [language, rightSideRoleKeyword, rows]);
   const issues = useMemo(
     () => [...structureIssues, ...characterIssues, ...rightSideRoleIssues],
     [characterIssues, rightSideRoleIssues, structureIssues],
   );
-  const overLimitRows = useMemo(() => new Set(characterIssues.map((issue) => issue.rowIndex)), [characterIssues]);
-  const highlightRows = useMemo(
-    () => new Set([...characterIssues, ...rightSideRoleIssues].map((issue) => issue.rowIndex).filter((rowIndex) => rowIndex >= 0)),
-    [characterIssues, rightSideRoleIssues],
-  );
+  const lengthWarningRows = useMemo(() => new Set(characterIssues.map((issue) => issue.rowIndex)), [characterIssues]);
+  const positionWarningRows = useMemo(() => new Set(rightSideRoleIssues.map((issue) => issue.rowIndex)), [rightSideRoleIssues]);
   const editorColumns = useMemo(() => getEditorColumns(template, rows), [template, rows]);
   const dialogueConfigColumns = useMemo(() => getDialogueConfigColumns(template), [template]);
   const selected = rows[selectedRow] ?? createEmptyRow(template);
@@ -215,8 +224,21 @@ export function App() {
   }, [characterLimit]);
 
   useEffect(() => {
+    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
+  }, [language]);
+
+  useEffect(() => {
     window.localStorage.setItem(RIGHT_SIDE_ROLE_STORAGE_KEY, rightSideRoleKeyword);
   }, [rightSideRoleKeyword]);
+
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setToast(""), 2400);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   useEffect(() => {
     setNodePositions(loadNodePositions(sourceName));
@@ -240,6 +262,10 @@ export function App() {
     window.requestAnimationFrame(() => {
       const target = viewMode === "nodes" ? nodeRefs.current.get(rowIndex) : rowRefs.current.get(rowIndex);
       target?.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+      if (pendingEditorFocusRowRef.current === rowIndex) {
+        pendingEditorFocusRowRef.current = null;
+        focusEditableElement(target);
+      }
     });
   }, [rows, selectedRow, viewMode]);
 
@@ -252,7 +278,15 @@ export function App() {
     }
     setLastSavedAt(draft.savedAt);
     setHasUnsavedChanges(false);
-    setStatus(mode === "manual" ? `进度已保存：${formatSavedAt(draft.savedAt)}` : `已自动保存：${formatSavedAt(draft.savedAt)}`);
+    const message =
+      mode === "manual"
+        ? tr(language, `进度已保存：${formatSavedAt(draft.savedAt)}`, `Progress saved: ${formatSavedAt(draft.savedAt)}`)
+        : tr(language, `已自动保存：${formatSavedAt(draft.savedAt)}`, `Auto-saved: ${formatSavedAt(draft.savedAt)}`);
+    if (mode === "manual") {
+      notifySuccess(message);
+    } else {
+      setStatus(message);
+    }
   }
 
   async function handleFiles(files: FileList | null) {
@@ -273,10 +307,16 @@ export function App() {
       setSelectedRow(0);
       setSourceName(file.name);
       setReplaceOptions((current) => ({ ...current, columns: defaultReplaceColumns(parsed.template) }));
-      setStatus(`已导入 ${parsed.rows.length} 个节点，${parsed.template.columns.length} 个导出字段`);
+      setStatus(
+        tr(
+          language,
+          `已导入 ${parsed.rows.length} 个节点，${parsed.template.columns.length} 个导出字段`,
+          `Imported ${parsed.rows.length} nodes and ${parsed.template.columns.length} export columns`,
+        ),
+      );
       setHasUnsavedChanges(true);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "导入失败");
+      setStatus(error instanceof Error ? error.message : tr(language, "导入失败", "Import failed"));
     } finally {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -288,22 +328,28 @@ export function App() {
     try {
       const clipboardText = await readClipboardText();
       if (!clipboardText?.trim()) {
-        setStatus("剪贴板为空：请先从 Excel 复制场景、角色名、正文三列");
+        setStatus(tr(language, "剪贴板为空：请先从 Excel 复制场景、角色名、正文三列", "Clipboard is empty. Copy scene, role, and content columns from Excel first."));
         return;
       }
 
       const result = insertScriptRowsFromClipboard(template, rows, selectedRow, clipboardText);
       if (result.insertedCount === 0) {
-        setStatus("剪贴板没有可写入的正文行");
+        setStatus(tr(language, "剪贴板没有可写入的正文行", "Clipboard has no content rows to insert"));
         return;
       }
 
       setRows(result.rows);
-      selectRow(result.insertedIndex, true);
+      selectRow(result.insertedIndex, true, true);
       setHasUnsavedChanges(true);
-      setStatus(`已预处理 ${result.insertedCount} 行剧本，旁白角色留空 ${result.narratorCount} 行`);
+      setStatus(
+        tr(
+          language,
+          `已预处理 ${result.insertedCount} 行剧本，旁白角色留空 ${result.narratorCount} 行`,
+          `Preprocessed ${result.insertedCount} script rows; narrator roles left empty in ${result.narratorCount} rows`,
+        ),
+      );
     } catch (error) {
-      setStatus(error instanceof Error ? `读取剪贴板失败：${error.message}` : "读取剪贴板失败");
+      setStatus(error instanceof Error ? tr(language, `读取剪贴板失败：${error.message}`, `Failed to read clipboard: ${error.message}`) : tr(language, "读取剪贴板失败", "Failed to read clipboard"));
     }
   }
 
@@ -311,11 +357,19 @@ export function App() {
     setRows((current) => current.map((row, index) => (index === rowIndex ? { ...row, [key]: value } : row)));
   }
 
-  function selectRow(rowIndex: number, scrollIntoView = false) {
+  function selectRow(rowIndex: number, scrollIntoView = false, focusEditor = false) {
     if (scrollIntoView) {
       pendingScrollRowRef.current = rowIndex;
     }
+    if (focusEditor) {
+      pendingEditorFocusRowRef.current = rowIndex;
+    }
     setSelectedRow(rowIndex);
+  }
+
+  function notifySuccess(message: string) {
+    setStatus(message);
+    setToast(message);
   }
 
   function bindRowRef(rowIndex: number) {
@@ -344,13 +398,13 @@ export function App() {
     selectRow(result.insertedIndex, true);
 
     if (kind === "choice") {
-      setStatus("已添加选项和分支对话，并自动绑定父节点与汇合节点");
+      setStatus(tr(language, "已添加选项和分支对话，并自动绑定父节点与汇合节点", "Added a choice and branch dialogue, with parent and merge links bound"));
     } else if (kind === "end") {
-      setStatus("已添加结束节点，并自动绑定到当前节点之后");
+      setStatus(tr(language, "已添加结束节点，并自动绑定到当前节点之后", "Added an end node after the current node"));
     } else if (kind === "reward") {
-      setStatus("已添加奖励，并自动绑定父节点和下一节点");
+      setStatus(tr(language, "已添加奖励，并自动绑定父节点和下一节点", "Added a reward node with parent and next links bound"));
     } else {
-      setStatus("已添加对话，并自动绑定父节点和下一节点");
+      setStatus(tr(language, "已添加对话，并自动绑定父节点和下一节点", "Added a dialogue node with parent and next links bound"));
     }
   }
 
@@ -358,18 +412,18 @@ export function App() {
     const result = insertStoryNode(template, rows, parentIndex, "choice");
     setRows(result.rows);
     selectRow(result.insertedIndex, true);
-    setStatus("已在当前分支组添加选项，并自动绑定分支首句");
+    setStatus(tr(language, "已在当前分支组添加选项，并自动绑定分支首句", "Added a choice to the current branch group"));
   }
 
   function deleteRow(rowIndex: number) {
     const next = deleteStoryNode(rows, rowIndex);
     setRows(next);
     setSelectedRow(Math.max(0, Math.min(rowIndex, next.length - 1)));
-    setStatus("已删除节点，并自动修复线性跳转");
+    setStatus(tr(language, "已删除节点，并自动修复线性跳转", "Deleted the node and repaired linear skip links"));
   }
 
   function clearTable() {
-    if (!window.confirm("确认清空当前表格？所有节点都会被删除，并覆盖本地草稿。")) {
+    if (!window.confirm(tr(language, "确认清空当前表格？所有节点都会被删除，并覆盖本地草稿。", "Clear the current table? All nodes will be deleted and the local draft will be overwritten."))) {
       return;
     }
 
@@ -380,14 +434,14 @@ export function App() {
     setLastSavedAt(draft.savedAt);
     setHasUnsavedChanges(false);
     lastSavedSnapshotRef.current = makeDraftSnapshot({ sourceName, template, rows: clearedRows, selectedRow: 0 });
-    setStatus(`表格已清空：${formatSavedAt(draft.savedAt)}`);
+    setStatus(tr(language, `表格已清空：${formatSavedAt(draft.savedAt)}`, `Table cleared: ${formatSavedAt(draft.savedAt)}`));
   }
 
   function exportCsv() {
     const exportRows = ensureFirstBeginFlag(rows);
     const blob = new Blob([exportCsvText(template, exportRows)], { type: "text/csv;charset=utf-8" });
     downloadBlob(blob, filenameWithExt(sourceName, "csv"));
-    setStatus("CSV 已导出");
+    notifySuccess(tr(language, "CSV 已导出", "CSV exported"));
   }
 
   function exportXlsx() {
@@ -396,12 +450,12 @@ export function App() {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
     downloadBlob(blob, filenameWithExt(sourceName, "xlsx"));
-    setStatus("XLSX 已导出");
+    notifySuccess(tr(language, "XLSX 已导出", "XLSX exported"));
   }
 
   function handleSaveTemplate() {
     saveTemplate(template);
-    setStatus("模板已保存到本机浏览器");
+    notifySuccess(tr(language, "模板已保存到本机浏览器", "Template saved locally"));
   }
 
   function applyBatchReplace() {
@@ -409,9 +463,9 @@ export function App() {
       setUndoRows(rows);
       const result = applyReplacement(rows, replaceOptions);
       setRows(result.rows);
-      setStatus(`替换 ${result.matches} 处，影响 ${result.affectedCells} 个单元格`);
+      setStatus(tr(language, `替换 ${result.matches} 处，影响 ${result.affectedCells} 个单元格`, `Replaced ${result.matches} matches in ${result.affectedCells} cells`));
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "替换表达式无效");
+      setStatus(error instanceof Error ? error.message : tr(language, "替换表达式无效", "Invalid replace expression"));
     }
   }
 
@@ -421,18 +475,18 @@ export function App() {
     }
     setRows(undoRows);
     setUndoRows(null);
-    setStatus("已撤销上一次替换");
+    setStatus(tr(language, "已撤销上一次替换", "Reverted the last replacement"));
   }
 
   function addColumn() {
     const key = nextColumnKey(template);
-    const column: ColumnTemplate = { key, valueType: "string", label: "新字段", channel: "c", isLang: false };
+    const column: ColumnTemplate = { key, valueType: "string", label: tr(language, "新字段", "New Field"), channel: "c", isLang: false };
     setTemplate((current) => ({ ...current, columns: [...current.columns, column] }));
     setRows((current) => current.map((row) => ({ ...row, [key]: "" })));
   }
 
   function removeColumn(key: string) {
-    if (!window.confirm(`删除字段 ${key}？`)) {
+    if (!window.confirm(tr(language, `删除字段 ${key}？`, `Delete field ${key}?`))) {
       return;
     }
     setTemplate((current) => ({ ...current, columns: current.columns.filter((column) => column.key !== key) }));
@@ -450,7 +504,7 @@ export function App() {
       if (patch.key && patch.key !== existing.key) {
         const cleanKey = patch.key.trim();
         if (!cleanKey || current.columns.some((column, columnIndex) => columnIndex !== index && column.key === cleanKey)) {
-          setStatus("字段名不能为空，也不能重复");
+          setStatus(tr(language, "字段名不能为空，也不能重复", "Field names cannot be empty or duplicated"));
           return current;
         }
         setRows((currentRows) => updateColumnKey(currentRows, existing.key, cleanKey));
@@ -539,7 +593,7 @@ export function App() {
         }),
       );
       selectRow(sourceIndex);
-      setStatus(`已连到选项组：${source.id} -> ${firstOption.id}`);
+      setStatus(tr(language, `已连到选项组：${source.id} -> ${firstOption.id}`, `Connected to choice group: ${source.id} -> ${firstOption.id}`));
       return;
     }
 
@@ -555,7 +609,7 @@ export function App() {
       }),
     );
     selectRow(sourceIndex);
-    setStatus(`已连线：${source.id} -> ${target.id}`);
+    setStatus(tr(language, `已连线：${source.id} -> ${target.id}`, `Connected: ${source.id} -> ${target.id}`));
   }
 
   function clearGraphLink(rowIndex: number, kind: GraphLinkKind) {
@@ -566,7 +620,7 @@ export function App() {
 
     if (kind === "skip") {
       updateCell(rowIndex, "skip", "");
-      setStatus(`已清空 ${row.id || rowIndex + 1} 的跳转连线`);
+      setStatus(tr(language, `已清空 ${row.id || rowIndex + 1} 的跳转连线`, `Cleared skip link for ${row.id || rowIndex + 1}`));
     }
   }
 
@@ -579,12 +633,13 @@ export function App() {
       setNodePositions((current) => ({ ...current, [node.id]: position }));
     }
     selectRow(insertedIndex, true);
-    setStatus("已拖出新节点，尚未自动绑定连线");
+    setStatus(tr(language, "已拖出新节点，尚未自动绑定连线", "Created a detached node without automatic links"));
   }
 
   return (
     <main
       className={`app ${dragging ? "is-dragging" : ""}`}
+      data-drop-label={tr(language, "释放文件导入", "Drop file to import")}
       onDragOver={(event) => {
         event.preventDefault();
         setDragging(true);
@@ -600,7 +655,7 @@ export function App() {
         <div className="brand">
           <FileSpreadsheet size={24} aria-hidden="true" />
           <div>
-            <h1>剧情编辑器</h1>
+            <h1>{tr(language, "剧情编辑器", "Story Editor")}</h1>
             <span>{sourceName}</span>
           </div>
         </div>
@@ -608,11 +663,11 @@ export function App() {
           <input ref={fileInputRef} hidden type="file" accept=".csv,.xlsx,.xls" onChange={(event) => void handleFiles(event.target.files)} />
           <button type="button" onClick={() => fileInputRef.current?.click()}>
             <Upload size={16} aria-hidden="true" />
-            导入
+            {tr(language, "导入", "Import")}
           </button>
           <button type="button" className="script-preprocess-button" onClick={() => void preprocessScriptFromClipboard()}>
             <ClipboardPaste size={16} aria-hidden="true" />
-            剧本预处理
+            {tr(language, "剧本预处理", "Preprocess")}
           </button>
           <button type="button" onClick={exportCsv}>
             <Download size={16} aria-hidden="true" />
@@ -624,39 +679,56 @@ export function App() {
           </button>
           <button type="button" onClick={handleSaveTemplate}>
             <Save size={16} aria-hidden="true" />
-            保存模板
+            {tr(language, "保存模板", "Save Template")}
           </button>
           <button type="button" onClick={() => persistDraft("manual")}>
             <Save size={16} aria-hidden="true" />
-            保存进度
+            {tr(language, "保存进度", "Save Progress")}
           </button>
-          <div className="view-toggle" role="group" aria-label="视图切换">
+          <div className="view-toggle" role="group" aria-label={tr(language, "视图切换", "View switch")}>
             <button type="button" className={viewMode === "table" ? "active" : ""} onClick={() => setViewMode("table")}>
               <Table2 size={16} aria-hidden="true" />
-              表格
+              {tr(language, "表格", "Table")}
             </button>
             <button type="button" className={viewMode === "nodes" ? "active" : ""} onClick={() => setViewMode("nodes")}>
               <Network size={16} aria-hidden="true" />
-              节点
+              {tr(language, "节点", "Nodes")}
+            </button>
+          </div>
+          <div className="view-toggle language-toggle" role="group" aria-label={tr(language, "语言切换", "Language switch")}>
+            <Languages size={15} aria-hidden="true" />
+            <button type="button" className={language === "zh" ? "active" : ""} onClick={() => setLanguage("zh")}>
+              中
+            </button>
+            <button type="button" className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>
+              EN
             </button>
           </div>
           <button type="button" onClick={clearTable}>
             <Trash2 size={16} aria-hidden="true" />
-            清空表格
+            {tr(language, "清空表格", "Clear")}
           </button>
         </div>
       </header>
 
+      {toast && <div className="toast success">{toast}</div>}
+
       <section className="status-strip">
         <span>{status}</span>
-        <span>{rows.length} 个节点</span>
-        <span>显示 {editorColumns.length} 项</span>
-        <span>导出 {template.columns.length} 列</span>
-        <span>字数上限 {characterLimit ?? "不校验"}</span>
-        {rightSideRoleKeyword.trim() && <span>右侧人物 {rightSideRoleKeyword.trim()}</span>}
-        <span className={hasUnsavedChanges ? "bad" : "good"}>{hasUnsavedChanges ? "未保存" : lastSavedAt ? `已保存 ${formatSavedAt(lastSavedAt)}` : "未生成草稿"}</span>
+        <span>{tr(language, `${rows.length} 个节点`, `${rows.length} nodes`)}</span>
+        <span>{tr(language, `显示 ${editorColumns.length} 项`, `${editorColumns.length} visible`)}</span>
+        <span>{tr(language, `导出 ${template.columns.length} 列`, `${template.columns.length} export columns`)}</span>
+        <span>{tr(language, `字数上限 ${characterLimit ?? "不校验"}`, `Character limit ${characterLimit ?? "off"}`)}</span>
+        {rightSideRoleKeyword.trim() && <span>{tr(language, `右侧人物 ${rightSideRoleKeyword.trim()}`, `Right-side role ${rightSideRoleKeyword.trim()}`)}</span>}
+        <span className={hasUnsavedChanges ? "bad" : "good"}>
+          {hasUnsavedChanges
+            ? tr(language, "未保存", "Unsaved")
+            : lastSavedAt
+              ? tr(language, `已保存 ${formatSavedAt(lastSavedAt)}`, `Saved ${formatSavedAt(lastSavedAt)}`)
+              : tr(language, "未生成草稿", "No draft")}
+        </span>
         <span className={issues.some((issue) => issue.level === "error") ? "bad" : "good"}>
-          {issues.length === 0 ? "无校验问题" : `${issues.length} 个校验提示`}
+          {issues.length === 0 ? tr(language, "无校验问题", "No validation issues") : tr(language, `${issues.length} 个校验提示`, `${issues.length} validation issues`)}
         </span>
       </section>
 
@@ -682,7 +754,7 @@ export function App() {
                     {rows.length === 0 ? (
                       <tr>
                         <td className="empty-table" colSpan={editorColumns.length + 2}>
-                          导入表格，或点击“添加对话”开始新剧情。
+                          {tr(language, "导入表格，或点击“添加对话”开始新剧情。", "Import a table, or click Add Dialogue to start a new story.")}
                         </td>
                       </tr>
                     ) : (
@@ -690,10 +762,10 @@ export function App() {
                         <tr
                           key={`${row.id || "row"}-${rowIndex}`}
                           ref={bindRowRef(rowIndex)}
-                          className={rowClassName(selectedRow === rowIndex, highlightRows.has(rowIndex))}
+                          className={rowClassName(selectedRow === rowIndex, lengthWarningRows.has(rowIndex), positionWarningRows.has(rowIndex))}
                         >
                           <td className="row-head">
-                            <button type="button" title="选中节点" className="row-number" onClick={() => selectRow(rowIndex)}>
+                            <button type="button" title={tr(language, "选中节点", "Select node")} className="row-number" onClick={() => selectRow(rowIndex)}>
                               {rowIndex + 1}
                             </button>
                           </td>
@@ -706,12 +778,13 @@ export function App() {
                                 onFocus={selectRow}
                                 onChange={updateCell}
                                 characterLimit={characterLimit}
-                                isOverLimit={overLimitRows.has(rowIndex)}
+                                isOverLimit={lengthWarningRows.has(rowIndex)}
+                                language={language}
                               />
                             </td>
                           ))}
                           <td className="row-head">
-                            <button type="button" title="删除节点" className="icon-button danger" onClick={() => deleteRow(rowIndex)}>
+                            <button type="button" title={tr(language, "删除节点", "Delete node")} className="icon-button danger" onClick={() => deleteRow(rowIndex)}>
                               <Trash2 size={15} aria-hidden="true" />
                             </button>
                           </td>
@@ -721,17 +794,18 @@ export function App() {
                   </tbody>
                 </table>
               </div>
-              <NodeActionBar className="table-node-action-bar" onAddNode={addStoryNode} />
+              <NodeActionBar className="table-node-action-bar" language={language} onAddNode={addStoryNode} />
             </>
           ) : (
             <NodeGraphView
               rows={rows}
               selectedRow={selectedRow}
               graphEdges={graphEdges}
-              highlightRows={highlightRows}
+              lengthWarningRows={lengthWarningRows}
               nodePositions={nodePositions}
-              overLimitRows={overLimitRows}
+              positionWarningRows={positionWarningRows}
               characterLimit={characterLimit}
+              language={language}
               bindNodeRef={bindNodeRef}
               onChange={updateCell}
               onClearLink={clearGraphLink}
@@ -749,10 +823,10 @@ export function App() {
           <section className="panel">
             <div className="panel-title">
               <FileSpreadsheet size={17} aria-hidden="true" />
-              <h2>文件信息</h2>
+              <h2>{tr(language, "文件信息", "File Info")}</h2>
             </div>
             <label className="file-name-field">
-              文件名
+              {tr(language, "文件名", "File Name")}
               <input value={sourceName} onChange={(event) => setSourceName(event.target.value)} />
             </label>
           </section>
@@ -760,28 +834,30 @@ export function App() {
           <section className="panel preview-panel">
             <div className="panel-title">
               <CheckCircle2 size={17} aria-hidden="true" />
-              <h2>预览</h2>
+              <h2>{tr(language, "预览", "Preview")}</h2>
             </div>
             <dl className="node-meta">
               <div>
-                <dt>类型</dt>
-                <dd>{rows.length === 0 ? "-" : nodeTypeLabel(selected)}</dd>
+                <dt>{tr(language, "类型", "Type")}</dt>
+                <dd>{rows.length === 0 ? "-" : nodeTypeLabel(selected, language)}</dd>
               </div>
               <div>
-                <dt>角色</dt>
-                <dd>{selected.role || "旁白"}</dd>
+                <dt>{tr(language, "角色", "Role")}</dt>
+                <dd>{selected.role || tr(language, "旁白", "Narrator")}</dd>
               </div>
               <div>
-                <dt>位置</dt>
-                <dd>{selected.boxPos === "r" ? "右" : "左"}</dd>
+                <dt>{tr(language, "位置", "Position")}</dt>
+                <dd>{selected.boxPos === "r" ? tr(language, "右", "Right") : tr(language, "左", "Left")}</dd>
               </div>
               <div>
-                <dt>字数</dt>
+                <dt>{tr(language, "字数", "Characters")}</dt>
                 <dd>{countCharacters(selected.content || "")}</dd>
               </div>
             </dl>
             <p className={`dialogue ${selected.boxPos === "r" ? "right" : "left"}`}>
-              {selected.reward ? `奖励：${selected.reward}` : selected.content || "当前节点没有正文内容"}
+              {selected.reward
+                ? tr(language, `奖励：${selected.reward}`, `Reward: ${selected.reward}`)
+                : selected.content || tr(language, "当前节点没有正文内容", "The current node has no content")}
             </p>
           </section>
 
@@ -789,16 +865,18 @@ export function App() {
             <section className="panel">
               <div className="panel-title">
                 <GitBranch size={17} aria-hidden="true" />
-                <h2>选项配置</h2>
+                <h2>{tr(language, "选项配置", "Choice Config")}</h2>
               </div>
               {choiceContext ? (
                 <>
-                  <p className="panel-note">同组选项会从同一句对话分出，分支首句会自动接回共同后续节点。</p>
+                  <p className="panel-note">
+                    {tr(language, "同组选项会从同一句对话分出，分支首句会自动接回共同后续节点。", "Choices in the same group branch from one dialogue, and branch starts reconnect to the shared next node.")}
+                  </p>
                   <div className="choice-list">
                     {choiceContext.choices.map((choice, index) => (
                       <div className="choice-editor" key={choice.option.id || index}>
                         <label>
-                          选项文本
+                          {tr(language, "选项文本", "Choice Text")}
                           <input
                             value={choice.option.content ?? ""}
                             onFocus={() => selectRow(choice.optionIndex)}
@@ -806,7 +884,7 @@ export function App() {
                           />
                         </label>
                         <label>
-                          分支首句
+                          {tr(language, "分支首句", "Branch Start")}
                           <textarea
                             value={choice.dialogue?.content ?? ""}
                             onKeyDown={handleTextareaKeyDown}
@@ -820,10 +898,10 @@ export function App() {
                         </label>
                         <div className="choice-actions">
                           <button type="button" onClick={() => selectRow(choice.optionIndex, true)}>
-                            选项行
+                            {tr(language, "选项行", "Choice Row")}
                           </button>
                           <button type="button" onClick={() => choice.dialogueIndex >= 0 && selectRow(choice.dialogueIndex, true)} disabled={choice.dialogueIndex < 0}>
-                            分支行
+                            {tr(language, "分支行", "Branch Row")}
                           </button>
                         </div>
                       </div>
@@ -831,16 +909,16 @@ export function App() {
                   </div>
                   <button type="button" onClick={() => addChoiceToContext(choiceContext.parentIndex)}>
                     <Plus size={16} aria-hidden="true" />
-                    添加同组选项
+                    {tr(language, "添加同组选项", "Add Group Choice")}
                   </button>
                 </>
               ) : selected.sign !== "END" && selected.sign !== "$" ? (
                 <button type="button" onClick={() => addStoryNode("choice")}>
                   <Plus size={16} aria-hidden="true" />
-                  给当前对话添加选项
+                  {tr(language, "给当前对话添加选项", "Add Choice To Dialogue")}
                 </button>
               ) : (
-                <p className="empty">当前节点不需要配置选项</p>
+                <p className="empty">{tr(language, "当前节点不需要配置选项", "The current node does not need choice config")}</p>
               )}
             </section>
           )}
@@ -849,7 +927,7 @@ export function App() {
             <section className="panel">
               <div className="panel-title">
                 <Settings size={17} aria-hidden="true" />
-                <h2>对话配置</h2>
+                <h2>{tr(language, "对话配置", "Dialogue Config")}</h2>
               </div>
               <div className="dialogue-config">
                 {dialogueConfigColumns.map((column) => (
@@ -865,26 +943,26 @@ export function App() {
           <section className="panel">
             <div className="panel-title">
               <Search size={17} aria-hidden="true" />
-              <h2>批量替换</h2>
+              <h2>{tr(language, "批量替换", "Batch Replace")}</h2>
             </div>
             <div className="form-grid">
               <label>
-                查找
+                {tr(language, "查找", "Find")}
                 <input value={replaceOptions.find} onChange={(event) => setReplaceOptions((current) => ({ ...current, find: event.target.value }))} />
               </label>
               <label>
-                替换为
+                {tr(language, "替换为", "Replace With")}
                 <input value={replaceOptions.replace} onChange={(event) => setReplaceOptions((current) => ({ ...current, replace: event.target.value }))} />
               </label>
             </div>
             <div className="check-row">
               <label>
                 <input type="checkbox" checked={replaceOptions.useRegex} onChange={(event) => setReplaceOptions((current) => ({ ...current, useRegex: event.target.checked }))} />
-                正则
+                {tr(language, "正则", "Regex")}
               </label>
               <label>
                 <input type="checkbox" checked={replaceOptions.matchCase} onChange={(event) => setReplaceOptions((current) => ({ ...current, matchCase: event.target.checked }))} />
-                区分大小写
+                {tr(language, "区分大小写", "Match Case")}
               </label>
             </div>
             <div className="column-pills">
@@ -898,11 +976,11 @@ export function App() {
             <div className="button-row">
               <button type="button" onClick={applyBatchReplace} disabled={!replaceOptions.find}>
                 <Search size={16} aria-hidden="true" />
-                替换 {replacePreview.matches}
+                {tr(language, `替换 ${replacePreview.matches}`, `Replace ${replacePreview.matches}`)}
               </button>
               <button type="button" onClick={restoreReplace} disabled={!undoRows}>
                 <Undo2 size={16} aria-hidden="true" />
-                撤销
+                {tr(language, "撤销", "Undo")}
               </button>
             </div>
           </section>
@@ -910,29 +988,34 @@ export function App() {
           <section className="panel">
             <div className="panel-title">
               <AlertTriangle size={17} aria-hidden="true" />
-              <h2>校验</h2>
+              <h2>{tr(language, "校验", "Validation")}</h2>
             </div>
             <label className="limit-field">
-              每行字数上限
-              <input min={1} placeholder="留空不校验" type="number" value={characterLimit ?? ""} onChange={(event) => updateCharacterLimit(event.target.value)} />
+              {tr(language, "每行字数上限", "Character Limit Per Row")}
+              <input min={1} placeholder={tr(language, "留空不校验", "Empty to disable")} type="number" value={characterLimit ?? ""} onChange={(event) => updateCharacterLimit(event.target.value)} />
             </label>
             <label className="limit-field">
-              人物靠右校验
-              <input placeholder="$player，留空不校验" value={rightSideRoleKeyword} onChange={(event) => setRightSideRoleKeyword(event.target.value)} />
+              {tr(language, "人物靠右校验", "Right-side Role Check")}
+              <input placeholder={tr(language, "$player，留空不校验", "$player, empty to disable")} value={rightSideRoleKeyword} onChange={(event) => setRightSideRoleKeyword(event.target.value)} />
             </label>
             {characterIssues.length > 0 && characterLimit !== null && (
-              <p className="panel-note">{characterIssues.length} 行超过 {characterLimit} 字，已在表格/节点中浅红标出。</p>
+              <p className="panel-note">{tr(language, `${characterIssues.length} 行超过 ${characterLimit} 字，已在表格/节点中红色标出。`, `${characterIssues.length} rows exceed ${characterLimit} characters and are highlighted red in the table/nodes.`)}</p>
             )}
             {rightSideRoleIssues.length > 0 && (
-              <p className="panel-note">{rightSideRoleIssues.length} 行人物包含 {rightSideRoleKeyword.trim()} 但位置不是右侧，已在表格/节点中浅红标出。</p>
+              <p className="panel-note">{tr(language, `${rightSideRoleIssues.length} 行人物包含 ${rightSideRoleKeyword.trim()} 但位置不是右侧，已在表格/节点中黄色标出。`, `${rightSideRoleIssues.length} rows contain ${rightSideRoleKeyword.trim()} but are not on the right side; they are highlighted yellow in the table/nodes.`)}</p>
             )}
             <div className="issue-list">
               {issues.length === 0 ? (
-                <p className="empty">结构看起来正常</p>
+                <p className="empty">{tr(language, "结构看起来正常", "Structure looks good")}</p>
               ) : (
                 issues.slice(0, 30).map((issue, index) => (
-                  <button key={`${issue.message}-${index}`} type="button" className={`issue ${issue.level}`} onClick={() => issue.rowIndex >= 0 && selectRow(issue.rowIndex, true)}>
-                    <strong>{issue.rowIndex >= 0 ? `第 ${issue.rowIndex + 1} 个节点` : "全表"}</strong>
+                  <button
+                    key={`${issue.message}-${index}`}
+                    type="button"
+                    className={`issue ${issue.level}${issue.kind ? ` ${issue.kind}` : ""}`}
+                    onClick={() => issue.rowIndex >= 0 && selectRow(issue.rowIndex, true)}
+                  >
+                    <strong>{issue.rowIndex >= 0 ? tr(language, `第 ${issue.rowIndex + 1} 个节点`, `Node ${issue.rowIndex + 1}`) : tr(language, "全表", "Whole Table")}</strong>
                     <span>{issue.message}</span>
                   </button>
                 ))
@@ -943,32 +1026,32 @@ export function App() {
           <details className="panel template-panel">
             <summary className="panel-title">
               <Settings size={17} aria-hidden="true" />
-              <h2>表结构</h2>
+              <h2>{tr(language, "表结构", "Table Schema")}</h2>
             </summary>
             <div className="template-name">
               <input value={template.name} onChange={(event) => setTemplate((current) => ({ ...current, name: event.target.value }))} />
-              <button type="button" title="新增字段" className="icon-button" onClick={addColumn}>
+              <button type="button" title={tr(language, "新增字段", "Add Field")} className="icon-button" onClick={addColumn}>
                 <Plus size={16} aria-hidden="true" />
               </button>
             </div>
             <div className="columns-editor">
               {template.columns.map((column, index) => (
                 <div className="column-editor" key={column.key}>
-                  <input aria-label="字段名" value={column.key} onChange={(event) => updateColumn(index, { key: event.target.value })} />
-                  <input aria-label="类型" value={column.valueType} onChange={(event) => updateColumn(index, { valueType: event.target.value })} />
-                  <input aria-label="中文名" value={column.label} onChange={(event) => updateColumn(index, { label: event.target.value, isLang: event.target.value.includes("#Lang") })} />
-                  <input aria-label="端侧" value={column.channel} onChange={(event) => updateColumn(index, { channel: event.target.value })} />
-                  <label title="多语言字段">
+                  <input aria-label={tr(language, "字段名", "Field Key")} value={column.key} onChange={(event) => updateColumn(index, { key: event.target.value })} />
+                  <input aria-label={tr(language, "类型", "Type")} value={column.valueType} onChange={(event) => updateColumn(index, { valueType: event.target.value })} />
+                  <input aria-label={tr(language, "中文名", "Label")} value={column.label} onChange={(event) => updateColumn(index, { label: event.target.value, isLang: event.target.value.includes("#Lang") })} />
+                  <input aria-label={tr(language, "端侧", "Channel")} value={column.channel} onChange={(event) => updateColumn(index, { channel: event.target.value })} />
+                  <label title={tr(language, "多语言字段", "Language Field")}>
                     <input type="checkbox" checked={column.isLang} onChange={(event) => updateColumn(index, { isLang: event.target.checked })} />
                     Lang
                   </label>
-                  <button type="button" title="上移" className="icon-button" onClick={() => moveColumn(index, -1)}>
+                  <button type="button" title={tr(language, "上移", "Move Up")} className="icon-button" onClick={() => moveColumn(index, -1)}>
                     <ArrowUp size={14} aria-hidden="true" />
                   </button>
-                  <button type="button" title="下移" className="icon-button" onClick={() => moveColumn(index, 1)}>
+                  <button type="button" title={tr(language, "下移", "Move Down")} className="icon-button" onClick={() => moveColumn(index, 1)}>
                     <ArrowDown size={14} aria-hidden="true" />
                   </button>
-                  <button type="button" title="删除字段" className="icon-button danger" onClick={() => removeColumn(column.key)}>
+                  <button type="button" title={tr(language, "删除字段", "Delete Field")} className="icon-button danger" onClick={() => removeColumn(column.key)}>
                     <Trash2 size={14} aria-hidden="true" />
                   </button>
                 </div>
@@ -981,24 +1064,24 @@ export function App() {
   );
 }
 
-function NodeActionBar({ className = "", onAddNode }: { className?: string; onAddNode: (kind: StoryNodeKind) => void }) {
+function NodeActionBar({ className = "", language, onAddNode }: { className?: string; language: AppLanguage; onAddNode: (kind: StoryNodeKind) => void }) {
   return (
     <div className={`node-action-bar ${className}`}>
       <button type="button" className="dialogue-button" onClick={() => onAddNode("dialogue")}>
         <MessageSquare size={16} aria-hidden="true" />
-        添加对话
+        {storyNodeKindText("dialogue", language)}
       </button>
       <button type="button" onClick={() => onAddNode("choice")}>
         <GitBranch size={16} aria-hidden="true" />
-        添加选项
+        {storyNodeKindText("choice", language)}
       </button>
       <button type="button" onClick={() => onAddNode("reward")}>
         <Gift size={16} aria-hidden="true" />
-        添加奖励
+        {storyNodeKindText("reward", language)}
       </button>
       <button type="button" onClick={() => onAddNode("end")}>
         <Octagon size={16} aria-hidden="true" />
-        添加结束
+        {storyNodeKindText("end", language)}
       </button>
     </div>
   );
@@ -1006,9 +1089,11 @@ function NodeActionBar({ className = "", onAddNode }: { className?: string; onAd
 
 function GraphNodePalette({
   className = "",
+  language,
   onStartCreate,
 }: {
   className?: string;
+  language: AppLanguage;
   onStartCreate: (kind: StoryNodeKind, event: ReactPointerEvent<HTMLButtonElement>) => void;
 }) {
   const items: Array<{ kind: StoryNodeKind; icon: typeof MessageSquare }> = [
@@ -1025,11 +1110,11 @@ function GraphNodePalette({
           type="button"
           key={kind}
           className={kind === "dialogue" ? "dialogue-button" : undefined}
-          title={`拖到画布${storyNodeKindText(kind)}`}
+          title={tr(language, `拖到画布${storyNodeKindText(kind, language)}`, `Drag to canvas: ${storyNodeKindText(kind, language)}`)}
           onPointerDown={(event) => onStartCreate(kind, event)}
         >
           <Icon size={16} aria-hidden="true" />
-          {storyNodeKindText(kind)}
+          {storyNodeKindText(kind, language)}
         </button>
       ))}
     </div>
@@ -1040,10 +1125,11 @@ function NodeGraphView({
   rows,
   selectedRow,
   graphEdges,
-  highlightRows,
+  lengthWarningRows,
   nodePositions,
-  overLimitRows,
+  positionWarningRows,
   characterLimit,
+  language,
   bindNodeRef,
   onClearLink,
   onChange,
@@ -1057,10 +1143,11 @@ function NodeGraphView({
   rows: StoryRow[];
   selectedRow: number;
   graphEdges: GraphEdge[];
-  highlightRows: Set<number>;
+  lengthWarningRows: Set<number>;
   nodePositions: Record<string, NodePosition>;
-  overLimitRows: Set<number>;
+  positionWarningRows: Set<number>;
   characterLimit: number | null;
+  language: AppLanguage;
   bindNodeRef: (rowIndex: number) => (element: HTMLElement | null) => void;
   onClearLink: (rowIndex: number, kind: GraphLinkKind) => void;
   onChange: (rowIndex: number, key: string, value: string) => void;
@@ -1205,11 +1292,12 @@ function NodeGraphView({
     <div className="node-view">
       <div className="node-view-head">
         <div>
-          <h2>节点流程图</h2>
-          <span>拖出节点后再拉线，连线会自动维护父节点和跳转。</span>
+          <h2>{tr(language, "节点流程图", "Node Flow")}</h2>
+          <span>{tr(language, "拖出节点后再拉线，连线会自动维护父节点和跳转。", "Drag nodes out first, then draw links. Links maintain parent and skip fields automatically.")}</span>
         </div>
         <GraphNodePalette
           className="node-view-actions"
+          language={language}
           onStartCreate={(kind, event) => {
             event.preventDefault();
             setPaletteDrag({ kind, pointer: clientPointToCanvas(event.nativeEvent, canvasRef.current) });
@@ -1234,7 +1322,9 @@ function NodeGraphView({
         }}
       >
         <div className="node-canvas-content" style={{ width: canvasSize.width, height: canvasSize.height }}>
-          {rows.length === 0 && <p className="empty-graph-message">从上方拖一个节点到画布开始新剧情。</p>}
+          {rows.length === 0 && (
+            <p className="empty-graph-message">{tr(language, "从上方拖一个节点到画布开始新剧情。", "Drag a node from above onto the canvas to start a new story.")}</p>
+          )}
           <svg className="node-link-layer" width={canvasSize.width} height={canvasSize.height} aria-hidden="true">
             <defs>
               <marker id="choice-arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
@@ -1268,15 +1358,15 @@ function NodeGraphView({
 
           {rows.map((row, rowIndex) => {
             const isSelected = selectedRow === rowIndex;
-            const isOverLimit = overLimitRows.has(rowIndex);
-            const isHighlighted = highlightRows.has(rowIndex);
+            const isOverLimit = lengthWarningRows.has(rowIndex);
+            const hasPositionWarning = positionWarningRows.has(rowIndex);
             const position = getNodePosition(row, rowIndex, nodePositions);
 
             return (
               <article
                 key={`${row.id || "node"}-${rowIndex}`}
                 ref={bindNodeRef(rowIndex)}
-                className={`story-node graph-node ${nodeKindClass(row)}${isSelected ? " selected" : ""}${isHighlighted ? " over-limit" : ""}`}
+                className={`story-node graph-node ${nodeKindClass(row)}${isSelected ? " selected" : ""}${isOverLimit ? " length-warning" : ""}${hasPositionWarning ? " position-warning" : ""}`}
                 data-node-index={rowIndex}
                 style={{ left: position.x, top: position.y }}
                 onClick={() => onSelect(rowIndex)}
@@ -1297,11 +1387,11 @@ function NodeGraphView({
                     });
                   }}
                 >
-                  <span className="node-kind">{nodeTypeLabel(row)}</span>
+                  <span className="node-kind">{nodeTypeLabel(row, language)}</span>
                   <strong>#{row.id || rowIndex + 1}</strong>
                   <button
                     type="button"
-                    title="删除节点"
+                    title={tr(language, "删除节点", "Delete node")}
                     className="icon-button danger"
                     onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
@@ -1313,11 +1403,12 @@ function NodeGraphView({
                   </button>
                 </div>
 
-                <NodeContentEditor row={row} rowIndex={rowIndex} characterLimit={characterLimit} isOverLimit={isOverLimit} onChange={onChange} />
+                <NodeContentEditor row={row} rowIndex={rowIndex} characterLimit={characterLimit} isOverLimit={isOverLimit} language={language} onChange={onChange} />
 
                 <NodeRelationPorts
                   row={row}
                   rowIndex={rowIndex}
+                  language={language}
                   onClearLink={onClearLink}
                   onJumpToNode={onJumpToNode}
                   onStartConnection={(kind, event) => {
@@ -1345,22 +1436,24 @@ function NodeContentEditor({
   rowIndex,
   characterLimit,
   isOverLimit,
+  language,
   onChange,
 }: {
   row: StoryRow;
   rowIndex: number;
   characterLimit: number | null;
   isOverLimit: boolean;
+  language: AppLanguage;
   onChange: (rowIndex: number, key: string, value: string) => void;
 }) {
   if (row.sign === "END") {
-    return <p className="node-empty-text">结束节点</p>;
+    return <p className="node-empty-text">{tr(language, "结束节点", "End Node")}</p>;
   }
 
   if (row.sign === "$" || row.reward) {
     return (
       <label className="node-field">
-        奖励
+        {tr(language, "奖励", "Reward")}
         <input value={row.reward ?? ""} onChange={(event) => onChange(rowIndex, "reward", event.target.value)} />
       </label>
     );
@@ -1369,7 +1462,7 @@ function NodeContentEditor({
   return (
     <div className="node-edit-grid">
       <label className="node-field node-content-field">
-        {row.sign === "&" ? "选项文本" : "正文"}
+        {row.sign === "&" ? tr(language, "选项文本", "Choice Text") : tr(language, "正文", "Content")}
         <textarea
           value={row.content ?? ""}
           onKeyDown={handleTextareaKeyDown}
@@ -1383,16 +1476,16 @@ function NodeContentEditor({
       {row.sign !== "&" && (
         <div className="node-inline-fields">
           <label className="node-field">
-            角色
+            {tr(language, "角色", "Role")}
             <input value={row.role ?? ""} onChange={(event) => onChange(rowIndex, "role", event.target.value)} />
           </label>
           <label className="node-field">
-            人物ID
+            {tr(language, "人物ID", "Role ID")}
             <input value={row.roleID ?? ""} onChange={(event) => onChange(rowIndex, "roleID", event.target.value)} />
           </label>
           <div className="node-field">
-            位置
-            <PositionSwitch value={row.boxPos ?? "l"} onFocus={() => undefined} onChange={(value) => onChange(rowIndex, "boxPos", value)} />
+            {tr(language, "位置", "Position")}
+            <PositionSwitch value={row.boxPos ?? "l"} language={language} onFocus={() => undefined} onChange={(value) => onChange(rowIndex, "boxPos", value)} />
           </div>
         </div>
       )}
@@ -1403,12 +1496,14 @@ function NodeContentEditor({
 function NodeRelationPorts({
   row,
   rowIndex,
+  language,
   onClearLink,
   onJumpToNode,
   onStartConnection,
 }: {
   row: StoryRow;
   rowIndex: number;
+  language: AppLanguage;
   onClearLink: (rowIndex: number, kind: GraphLinkKind) => void;
   onJumpToNode: (id: string) => void;
   onStartConnection: (kind: GraphLinkKind, event: ReactPointerEvent<HTMLButtonElement>) => void;
@@ -1416,25 +1511,30 @@ function NodeRelationPorts({
   return (
     <div className="node-relation-panel">
       <div className="node-port-row">
-        <button type="button" className="node-port skip" title="拖到目标节点：设置跳转并自动绑定父节点" onPointerDown={(event) => onStartConnection("skip", event)}>
-          拖出连线
+        <button
+          type="button"
+          className="node-port skip"
+          title={tr(language, "拖到目标节点：设置跳转并自动绑定父节点", "Drag to target node: set skip and bind the parent automatically")}
+          onPointerDown={(event) => onStartConnection("skip", event)}
+        >
+          {tr(language, "拖出连线", "Drag Link")}
         </button>
       </div>
       <div className="node-link-row">
         {row.parent_id && (
           <span className="link-chip parent readonly">
             <button type="button" onClick={() => onJumpToNode(row.parent_id)}>
-              父 {row.parent_id}
+              {tr(language, `父 ${row.parent_id}`, `Parent ${row.parent_id}`)}
             </button>
           </span>
         )}
         {row.skip && (
           <span className="link-chip skip">
             <button type="button" onClick={() => onJumpToNode(row.skip)}>
-              跳转 {row.skip}
+              {tr(language, `跳转 ${row.skip}`, `Skip ${row.skip}`)}
               <ArrowRight size={13} aria-hidden="true" />
             </button>
-            <button type="button" title="清空跳转连线" className="chip-clear" onClick={() => onClearLink(rowIndex, "skip")}>
+            <button type="button" title={tr(language, "清空跳转连线", "Clear skip link")} className="chip-clear" onClick={() => onClearLink(rowIndex, "skip")}>
               ×
             </button>
           </span>
@@ -1452,6 +1552,7 @@ function EditableCell({
   onChange,
   characterLimit,
   isOverLimit,
+  language,
 }: {
   column: ColumnTemplate;
   row: StoryRow;
@@ -1460,6 +1561,7 @@ function EditableCell({
   onChange: (rowIndex: number, key: string, value: string) => void;
   characterLimit: number | null;
   isOverLimit: boolean;
+  language: AppLanguage;
 }) {
   if (!isCellNeeded(row, column.key)) {
     return <span className="not-needed">-</span>;
@@ -1469,6 +1571,7 @@ function EditableCell({
     return (
       <PositionSwitch
         value={row[column.key] ?? "l"}
+        language={language}
         onFocus={() => onFocus(rowIndex)}
         onChange={(value) => onChange(rowIndex, column.key, value)}
       />
@@ -1495,7 +1598,7 @@ function EditableCell({
   return <input value={row[column.key] ?? ""} onFocus={() => onFocus(rowIndex)} onChange={(event) => onChange(rowIndex, column.key, event.target.value)} />;
 }
 
-function PositionSwitch({ value, onFocus, onChange }: { value: string; onFocus: () => void; onChange: (value: string) => void }) {
+function PositionSwitch({ value, language, onFocus, onChange }: { value: string; language: AppLanguage; onFocus: () => void; onChange: (value: string) => void }) {
   const checked = value === "r";
   return (
     <label className="switch-control">
@@ -1506,7 +1609,7 @@ function PositionSwitch({ value, onFocus, onChange }: { value: string; onFocus: 
         onChange={(event) => onChange(event.target.checked ? "r" : "l")}
       />
       <span className="switch-track" aria-hidden="true" />
-      <strong>{checked ? "右" : "左"}</strong>
+      <strong>{checked ? tr(language, "右", "R") : tr(language, "左", "L")}</strong>
     </label>
   );
 }
@@ -1546,7 +1649,27 @@ async function readClipboardText(): Promise<string> {
     return navigator.clipboard.readText();
   }
 
-  throw new Error("当前环境不支持读取剪贴板");
+  throw new Error("Clipboard reading is not supported in this environment");
+}
+
+function focusEditableElement(container: HTMLElement | undefined) {
+  if (!container) {
+    return;
+  }
+
+  window.focus();
+  const editable = container.querySelector<HTMLTextAreaElement | HTMLInputElement>('textarea, input:not([type="checkbox"])');
+  if (!editable) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    editable.focus({ preventScroll: true });
+    if (editable instanceof HTMLTextAreaElement || editable.type === "text") {
+      const end = editable.value.length;
+      editable.setSelectionRange(end, end);
+    }
+  });
 }
 
 function isCellNeeded(row: StoryRow, key: string): boolean {
@@ -1562,8 +1685,12 @@ function isCellNeeded(row: StoryRow, key: string): boolean {
   return key !== "reward";
 }
 
-function rowClassName(isSelected: boolean, isOverLimit: boolean): string {
-  return [isSelected ? "selected" : "", isOverLimit ? "over-limit" : ""].filter(Boolean).join(" ");
+function rowClassName(isSelected: boolean, hasLengthWarning: boolean, hasPositionWarning: boolean): string {
+  return [
+    isSelected ? "selected" : "",
+    hasLengthWarning ? "length-warning" : "",
+    hasPositionWarning ? "position-warning" : "",
+  ].filter(Boolean).join(" ");
 }
 
 function nodeKindClass(row: StoryRow): string {
@@ -1634,17 +1761,17 @@ function nextNumericRowId(rows: StoryRow[]): string {
   return String(maxId + 1);
 }
 
-function storyNodeKindText(kind: StoryNodeKind): string {
+function storyNodeKindText(kind: StoryNodeKind, language: AppLanguage = "zh"): string {
   if (kind === "choice") {
-    return "添加选项";
+    return tr(language, "添加选项", "Add Choice");
   }
   if (kind === "reward") {
-    return "添加奖励";
+    return tr(language, "添加奖励", "Add Reward");
   }
   if (kind === "end") {
-    return "添加结束";
+    return tr(language, "添加结束", "Add End");
   }
-  return "添加对话";
+  return tr(language, "添加对话", "Add Dialogue");
 }
 
 function getChoiceGroupIndexes(rows: StoryRow[], optionIndex: number): number[] {
@@ -1837,6 +1964,10 @@ function nextColumnKey(template: StoryTemplate): string {
 function formatCharacterCount(value: string, limit: number | null): string {
   const count = countCharacters(value);
   return limit === null ? String(count) : `${count} / ${limit}`;
+}
+
+function tr(language: AppLanguage, zh: string, en: string): string {
+  return language === "en" ? en : zh;
 }
 
 function countCharacters(value: string): number {

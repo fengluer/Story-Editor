@@ -83,10 +83,11 @@ if ($targetType -eq "portable") {
     throw "Portable output was not created: $source"
   }
 
-  $zipPath = Join-Path $releaseDir "Story-Editor-portable-$stamp.zip"
+  $artifactPath = Join-Path $releaseDir "Story-Editor-portable-$stamp.zip"
   Invoke-Step "Create release zip" {
-    Compress-Archive -Path $source -DestinationPath $zipPath
+    Compress-Archive -Path $source -DestinationPath $artifactPath
   }
+  $latestArtifactPath = Join-Path $releaseDir "Story-Editor-portable-latest.zip"
 } else {
   Invoke-Step "Package installer" {
     & $builder --win "--config.directories.output=$tempOutput"
@@ -100,17 +101,26 @@ if ($targetType -eq "portable") {
     throw "Installer output was not created in: $tempOutput"
   }
 
-  $zipPath = Join-Path $releaseDir "Story-Editor-installer-$stamp.zip"
-  Invoke-Step "Create release zip" {
-    Compress-Archive -Path $installer.FullName -DestinationPath $zipPath
+  $artifactPath = Join-Path $releaseDir "Story-Editor-installer-$stamp.exe"
+  Invoke-Step "Copy installer" {
+    Copy-Item -LiteralPath $installer.FullName -Destination $artifactPath -Force
   }
+  $latestArtifactPath = Join-Path $releaseDir "Story-Editor-installer-latest.exe"
 }
 
-$hash = Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath
+Copy-Item -LiteralPath $artifactPath -Destination $latestArtifactPath -Force
+
+$hash = Get-FileHash -Algorithm SHA256 -LiteralPath $artifactPath
+$latestHash = Get-FileHash -Algorithm SHA256 -LiteralPath $latestArtifactPath
 
 Write-Host ""
-Write-Host "Release package created:"
-Write-Host $zipPath
+Write-Host "Release artifact created:"
+Write-Host $artifactPath
 Write-Host "SHA256:"
 Write-Host $hash.Hash
+Write-Host ""
+Write-Host "Latest alias created:"
+Write-Host $latestArtifactPath
+Write-Host "SHA256:"
+Write-Host $latestHash.Hash
 Write-Host ""

@@ -2,6 +2,7 @@ import { createEmptyRow } from "../defaultTemplate";
 import type { ColumnTemplate, StoryRow, StoryTemplate } from "../types";
 
 export type StoryNodeKind = "dialogue" | "reward" | "choice" | "end";
+export type StoryEditorLanguage = "zh" | "en";
 
 const SYSTEM_KEYS = new Set(["id", "isBegin", "sign", "parent_id", "skip", "failSkip"]);
 const OPTIONAL_DIALOGUE_KEYS = ["boxPos"];
@@ -94,17 +95,17 @@ export function deleteStoryNode(rows: StoryRow[], rowIndex: number): StoryRow[] 
     }));
 }
 
-export function nodeTypeLabel(row: StoryRow): string {
+export function nodeTypeLabel(row: StoryRow, language: StoryEditorLanguage = "zh"): string {
   if (row.sign === "END") {
-    return "结束";
+    return language === "en" ? "End" : "结束";
   }
   if (row.sign === "&") {
-    return "选项";
+    return language === "en" ? "Choice" : "选项";
   }
   if (isRewardRow(row)) {
-    return "奖励";
+    return language === "en" ? "Reward" : "奖励";
   }
-  return "对话";
+  return language === "en" ? "Dialogue" : "对话";
 }
 
 export function ensureFirstBeginFlag(rows: StoryRow[]): StoryRow[] {

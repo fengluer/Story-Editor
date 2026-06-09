@@ -46,6 +46,22 @@ function Invoke-Step {
   & $Step
 }
 
+function Get-Sha256Hash {
+  param([string]$Path)
+
+  $stream = [System.IO.File]::OpenRead((Resolve-Path -LiteralPath $Path))
+  try {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      return ([System.BitConverter]::ToString($sha256.ComputeHash($stream)) -replace "-", "")
+    } finally {
+      $sha256.Dispose()
+    }
+  } finally {
+    $stream.Dispose()
+  }
+}
+
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $projectRoot
 
@@ -110,17 +126,17 @@ if ($targetType -eq "portable") {
 
 Copy-Item -LiteralPath $artifactPath -Destination $latestArtifactPath -Force
 
-$hash = Get-FileHash -Algorithm SHA256 -LiteralPath $artifactPath
-$latestHash = Get-FileHash -Algorithm SHA256 -LiteralPath $latestArtifactPath
+$hash = Get-Sha256Hash $artifactPath
+$latestHash = Get-Sha256Hash $latestArtifactPath
 
 Write-Host ""
 Write-Host "Release artifact created:"
 Write-Host $artifactPath
 Write-Host "SHA256:"
-Write-Host $hash.Hash
+Write-Host $hash
 Write-Host ""
 Write-Host "Latest alias created:"
 Write-Host $latestArtifactPath
 Write-Host "SHA256:"
-Write-Host $latestHash.Hash
+Write-Host $latestHash
 Write-Host ""

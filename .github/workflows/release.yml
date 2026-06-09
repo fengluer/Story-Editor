@@ -12,6 +12,11 @@ on:
       - main
     paths:
       - .github/workflows/release.yml
+      - package-release.ps1
+      - package.json
+      - package-lock.json
+      - electron/**
+      - src/**
 
 permissions:
   contents: write

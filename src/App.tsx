@@ -100,6 +100,15 @@ type PaletteDrag = {
   pointer: NodePosition;
 };
 
+type ConfirmDialog = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel: string;
+  intent?: "danger";
+  onConfirm: () => void;
+};
+
 type CanvasPanDrag = {
   startClientX: number;
   startClientY: number;
@@ -168,6 +177,7 @@ export function App() {
   const [characterLimit, setCharacterLimit] = useState(() => initialCharacterLimit());
   const [rightSideRoleKeyword, setRightSideRoleKeyword] = useState(() => initialRightSideRoleKeyword());
   const [nodePositions, setNodePositions] = useState<Record<string, NodePosition>>(() => initialNodePositions());
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const [replaceOptions, setReplaceOptions] = useState<ReplaceOptions>(() => ({
     find: "",
     replace: "",
@@ -413,6 +423,17 @@ export function App() {
     }, 0);
   }
 
+  function cancelConfirmDialog() {
+    setConfirmDialog(null);
+    restoreAppFocus({ focusSelectedEditor: true });
+  }
+
+  function confirmCurrentDialog() {
+    const action = confirmDialog?.onConfirm;
+    setConfirmDialog(null);
+    action?.();
+  }
+
   function bindRowRef(rowIndex: number) {
     return (element: HTMLTableRowElement | null) => {
       if (element) {
@@ -472,11 +493,17 @@ export function App() {
   }
 
   function clearTable() {
-    if (!window.confirm(tr(language, "确认清空当前表格？所有节点都会被删除，并覆盖本地草稿。", "Clear the current table? All nodes will be deleted and the local draft will be overwritten."))) {
-      restoreAppFocus({ focusSelectedEditor: true });
-      return;
-    }
+    setConfirmDialog({
+      title: tr(language, "清空表格", "Clear Table"),
+      message: tr(language, "确认清空当前表格？所有节点都会被删除，并覆盖本地草稿。", "Clear the current table? All nodes will be deleted and the local draft will be overwritten."),
+      confirmLabel: tr(language, "清空", "Clear"),
+      cancelLabel: tr(language, "取消", "Cancel"),
+      intent: "danger",
+      onConfirm: performClearTable,
+    });
+  }
 
+  function performClearTable() {
     const clearedRows: StoryRow[] = [];
     const draft = saveDraft({ sourceName, template, rows: clearedRows, selectedRow: 0 });
     pendingScrollRowRef.current = null;
@@ -567,10 +594,17 @@ export function App() {
   }
 
   function removeColumn(key: string) {
-    if (!window.confirm(tr(language, `删除字段 ${key}？`, `Delete field ${key}?`))) {
-      restoreAppFocus();
-      return;
-    }
+    setConfirmDialog({
+      title: tr(language, "删除字段", "Delete Field"),
+      message: tr(language, `删除字段 ${key}？`, `Delete field ${key}?`),
+      confirmLabel: tr(language, "删除", "Delete"),
+      cancelLabel: tr(language, "取消", "Cancel"),
+      intent: "danger",
+      onConfirm: () => performRemoveColumn(key),
+    });
+  }
+
+  function performRemoveColumn(key: string) {
     setTemplate((current) => ({ ...current, columns: current.columns.filter((column) => column.key !== key) }));
     setRows((current) => removeColumnFromRows(current, key));
     setReplaceOptions((current) => ({ ...current, columns: current.columns.filter((columnKey) => columnKey !== key) }));
@@ -797,6 +831,13 @@ export function App() {
       </header>
 
       {toast && <div className="toast success">{toast}</div>}
+      {confirmDialog && (
+        <ConfirmModal
+          dialog={confirmDialog}
+          onCancel={cancelConfirmDialog}
+          onConfirm={confirmCurrentDialog}
+        />
+      )}
 
       <section className="status-strip">
         <span>{status}</span>
@@ -1146,6 +1187,56 @@ export function App() {
         </aside>
       </div>
     </main>
+  );
+}
+
+function ConfirmModal({
+  dialog,
+  onCancel,
+  onConfirm,
+}: {
+  dialog: ConfirmDialog;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="confirm-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onCancel();
+        }
+      }}
+    >
+      <section
+        className="confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            onCancel();
+          }
+        }}
+      >
+        <div className={`confirm-icon ${dialog.intent === "danger" ? "danger" : ""}`}>
+          <AlertTriangle size={20} aria-hidden="true" />
+        </div>
+        <div className="confirm-content">
+          <h2 id="confirm-title">{dialog.title}</h2>
+          <p>{dialog.message}</p>
+          <div className="confirm-actions">
+            <button type="button" onClick={onCancel} autoFocus>
+              {dialog.cancelLabel}
+            </button>
+            <button type="button" className={dialog.intent === "danger" ? "danger-button" : undefined} onClick={onConfirm}>
+              {dialog.confirmLabel}
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 

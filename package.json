@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Local branching story table editor.",
   "author": "Story Editor Contributors",
+  "license": "MIT",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {

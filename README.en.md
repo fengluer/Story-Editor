@@ -183,8 +183,11 @@ npm run build
 
 ## Open Source Notes
 
-Before publishing to GitHub, consider adding:
+This project is open source under the MIT License. You may freely use, copy, modify, merge, publish, distribute, sublicense, or sell copies of this project, as long as the original copyright notice and license notice are preserved.
 
-- `LICENSE`: choose a clear license such as MIT or Apache-2.0.
+See [LICENSE](./LICENSE) for the full license text.
+
+When publishing a GitHub Release, consider adding:
+
 - Release notes: list features, fixes, and package SHA256 hashes.
 - Screenshots or GIFs: show table mode, node mode, and script preprocessing.

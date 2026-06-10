@@ -183,8 +183,11 @@ npm run build
 
 ## 开源说明
 
-发布到 GitHub 前建议补充：
+本项目使用 MIT License 开源。你可以自由使用、复制、修改、合并、发布、分发、再授权或销售本项目副本，但需要保留原始版权声明和许可证声明。
 
-- `LICENSE`：明确开源许可证，例如 MIT、Apache-2.0 等。
+完整许可证见 [LICENSE](./LICENSE)。
+
+发布 GitHub Release 时建议补充：
+
 - Release 说明：列出新增功能、修复内容和下载包 SHA256。
 - 截图或 GIF：展示表格模式、节点模式和剧本预处理流程。

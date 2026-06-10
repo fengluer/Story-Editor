@@ -105,6 +105,7 @@ type ConfirmDialog = {
   message: string;
   confirmLabel: string;
   cancelLabel: string;
+  confirmFirst?: boolean;
   intent?: "danger";
   onConfirm: () => void;
 };
@@ -498,6 +499,7 @@ export function App() {
       message: tr(language, "确认清空当前表格？所有节点都会被删除，并覆盖本地草稿。", "Clear the current table? All nodes will be deleted and the local draft will be overwritten."),
       confirmLabel: tr(language, "清空", "Clear"),
       cancelLabel: tr(language, "取消", "Cancel"),
+      confirmFirst: true,
       intent: "danger",
       onConfirm: performClearTable,
     });
@@ -1199,6 +1201,17 @@ function ConfirmModal({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const cancelButton = (
+    <button type="button" onClick={onCancel} autoFocus>
+      {dialog.cancelLabel}
+    </button>
+  );
+  const confirmButton = (
+    <button type="button" className={dialog.intent === "danger" ? "danger-button" : undefined} onClick={onConfirm}>
+      {dialog.confirmLabel}
+    </button>
+  );
+
   return (
     <div
       className="confirm-backdrop"
@@ -1227,12 +1240,17 @@ function ConfirmModal({
           <h2 id="confirm-title">{dialog.title}</h2>
           <p>{dialog.message}</p>
           <div className="confirm-actions">
-            <button type="button" onClick={onCancel} autoFocus>
-              {dialog.cancelLabel}
-            </button>
-            <button type="button" className={dialog.intent === "danger" ? "danger-button" : undefined} onClick={onConfirm}>
-              {dialog.confirmLabel}
-            </button>
+            {dialog.confirmFirst ? (
+              <>
+                {confirmButton}
+                {cancelButton}
+              </>
+            ) : (
+              <>
+                {cancelButton}
+                {confirmButton}
+              </>
+            )}
           </div>
         </div>
       </section>

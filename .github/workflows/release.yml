@@ -66,8 +66,8 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path "node_modules\electron\dist\electron.exe")) {
-            Write-Host "Electron binary missing after npm ci, reinstalling electron package..."
-            npm install electron
+            Write-Host "Electron binary missing after npm ci, running postinstall manually..."
+            node node_modules\electron\install.js
           }
 
       - name: Build portable package

@@ -1,7 +1,8 @@
 export function shouldBlockTextareaNewline(key: string, altKey: boolean, ctrlKey = false): boolean {
-  return key === "Enter" && !altKey && !ctrlKey;
+  return key === "Enter" && !ctrlKey;
 }
 
 export function stripPastedNewlines(value: string): string {
-  return value;
+  // Remove trailing newlines only; preserve newlines within the text.
+  return value.replace(/[\r\n]+$/, "");
 }

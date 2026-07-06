@@ -1831,6 +1831,13 @@ function PositionSwitch({ value, language, onFocus, onChange }: { value: string;
 }
 
 function handleTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+  if (event.key === "Enter" && event.ctrlKey) {
+    // Electron does not natively insert a newline on Ctrl+Enter like a browser does,
+    // so we insert it explicitly. execCommand triggers React's onChange correctly.
+    event.preventDefault();
+    document.execCommand("insertText", false, "\n");
+    return;
+  }
   if (shouldBlockTextareaNewline(event.key, event.altKey, event.ctrlKey)) {
     event.preventDefault();
   }

@@ -145,7 +145,7 @@ Invoke-NativeStep "Build renderer" {
 if ($targetType -eq "portable") {
   $packageOutput = Invoke-BuilderStep "Package portable app" $tempOutputBase {
     param([string]$OutputPath)
-    & $builder --dir "--config.directories.output=$OutputPath" "--config.electronDist=$electronDist"
+    & $builder --dir "--config.directories.output=$OutputPath" "--config.electronDist=$electronDist" --publish never
   }
 
   $source = Join-Path $packageOutput "win-unpacked"
@@ -161,7 +161,7 @@ if ($targetType -eq "portable") {
 } else {
   $packageOutput = Invoke-BuilderStep "Package installer" $tempOutputBase {
     param([string]$OutputPath)
-    & $builder --win "--config.directories.output=$OutputPath" "--config.electronDist=$electronDist"
+    & $builder --win "--config.directories.output=$OutputPath" "--config.electronDist=$electronDist" --publish never
   }
 
   $installer = Get-ChildItem -LiteralPath $packageOutput -Filter "*.exe" -File |

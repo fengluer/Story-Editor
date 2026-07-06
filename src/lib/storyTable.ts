@@ -152,6 +152,29 @@ export function validateContentLength(rows: StoryRow[], maxCharacters: number | 
   });
 }
 
+export function validateContentNewlines(rows: StoryRow[], enabled: boolean, language: ValidationLanguage = "zh"): ValidationIssue[] {
+  if (!enabled) {
+    return [];
+  }
+
+  return rows.flatMap((row, rowIndex) => {
+    const content = row.content ?? "";
+    if (!/[\r\n]/.test(content)) {
+      return [];
+    }
+
+    return [
+      {
+        level: "warning" as const,
+        rowIndex,
+        columnKey: "content",
+        kind: "newline" as const,
+        message: messageOf(language, "正文包含换行符", "Content contains line breaks"),
+      },
+    ];
+  });
+}
+
 export function validateRightSideRolePosition(rows: StoryRow[], roleKeyword: string, language: ValidationLanguage = "zh"): ValidationIssue[] {
   const keyword = roleKeyword.trim();
   if (!keyword) {

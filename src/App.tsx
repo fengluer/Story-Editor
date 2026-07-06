@@ -37,6 +37,7 @@ import {
   removeColumnFromRows,
   updateColumnKey,
   validateContentLength,
+  validateContentNewlines,
   validateRightSideRolePosition,
   validateStory,
 } from "./lib/storyTable";
@@ -52,6 +53,7 @@ type AppLanguage = StoryEditorLanguage;
 const AUTO_SAVE_INTERVAL_MS = 3 * 60 * 1000;
 const DEFAULT_CHARACTER_LIMIT = 40;
 const CHARACTER_LIMIT_STORAGE_KEY = "story-editor-character-limit";
+const NEWLINE_VALIDATION_STORAGE_KEY = "story-editor-newline-validation";
 const LANGUAGE_STORAGE_KEY = "story-editor-language";
 const RIGHT_SIDE_ROLE_STORAGE_KEY = "story-editor-right-side-role-keyword";
 const NODE_POSITION_STORAGE_PREFIX = "story-editor.node-positions";
@@ -154,6 +156,10 @@ function initialCharacterLimit(): number | null {
   return Number.isFinite(saved) && saved > 0 ? saved : DEFAULT_CHARACTER_LIMIT;
 }
 
+function initialNewlineValidationEnabled(): boolean {
+  return window.localStorage.getItem(NEWLINE_VALIDATION_STORAGE_KEY) === "true";
+}
+
 function initialRightSideRoleKeyword(): string {
   return window.localStorage.getItem(RIGHT_SIDE_ROLE_STORAGE_KEY) ?? "";
 }
@@ -176,6 +182,7 @@ export function App() {
   const [undoRows, setUndoRows] = useState<StoryRow[] | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [characterLimit, setCharacterLimit] = useState(() => initialCharacterLimit());
+  const [newlineValidationEnabled, setNewlineValidationEnabled] = useState(() => initialNewlineValidationEnabled());
   const [rightSideRoleKeyword, setRightSideRoleKeyword] = useState(() => initialRightSideRoleKeyword());
   const [nodePositions, setNodePositions] = useState<Record<string, NodePosition>>(() => initialNodePositions());
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
@@ -195,12 +202,13 @@ export function App() {
 
   const structureIssues = useMemo(() => validateStory(template, rows, language), [language, template, rows]);
   const characterIssues = useMemo(() => validateContentLength(rows, characterLimit, language), [language, rows, characterLimit]);
+  const newlineIssues = useMemo(() => validateContentNewlines(rows, newlineValidationEnabled, language), [language, newlineValidationEnabled, rows]);
   const rightSideRoleIssues = useMemo(() => validateRightSideRolePosition(rows, rightSideRoleKeyword, language), [language, rightSideRoleKeyword, rows]);
   const issues = useMemo(
-    () => [...structureIssues, ...characterIssues, ...rightSideRoleIssues],
-    [characterIssues, rightSideRoleIssues, structureIssues],
+    () => [...structureIssues, ...characterIssues, ...newlineIssues, ...rightSideRoleIssues],
+    [characterIssues, newlineIssues, rightSideRoleIssues, structureIssues],
   );
-  const lengthWarningRows = useMemo(() => new Set(characterIssues.map((issue) => issue.rowIndex)), [characterIssues]);
+  const lengthWarningRows = useMemo(() => new Set([...characterIssues, ...newlineIssues].map((issue) => issue.rowIndex)), [characterIssues, newlineIssues]);
   const positionWarningRows = useMemo(() => new Set(rightSideRoleIssues.map((issue) => issue.rowIndex)), [rightSideRoleIssues]);
   const editorColumns = useMemo(() => getEditorColumns(template, rows), [template, rows]);
   const dialogueConfigColumns = useMemo(() => getDialogueConfigColumns(template), [template]);
@@ -234,6 +242,10 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem(CHARACTER_LIMIT_STORAGE_KEY, characterLimit === null ? "" : String(characterLimit));
   }, [characterLimit]);
+
+  useEffect(() => {
+    window.localStorage.setItem(NEWLINE_VALIDATION_STORAGE_KEY, newlineValidationEnabled ? "true" : "false");
+  }, [newlineValidationEnabled]);
 
   useEffect(() => {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
@@ -847,6 +859,7 @@ export function App() {
         <span>{tr(language, `显示 ${editorColumns.length} 项`, `${editorColumns.length} visible`)}</span>
         <span>{tr(language, `导出 ${template.columns.length} 列`, `${template.columns.length} export columns`)}</span>
         <span>{tr(language, `字数上限 ${characterLimit ?? "不校验"}`, `Character limit ${characterLimit ?? "off"}`)}</span>
+        {newlineValidationEnabled && <span>{tr(language, "换行符校验 开", "Line break check on")}</span>}
         {rightSideRoleKeyword.trim() && <span>{tr(language, `右侧人物 ${rightSideRoleKeyword.trim()}`, `Right-side role ${rightSideRoleKeyword.trim()}`)}</span>}
         <span className={hasUnsavedChanges ? "bad" : "good"}>
           {hasUnsavedChanges
@@ -1126,8 +1139,17 @@ export function App() {
               {tr(language, "人物靠右校验", "Right-side Role Check")}
               <input placeholder={tr(language, "$player，留空不校验", "$player, empty to disable")} value={rightSideRoleKeyword} onChange={(event) => setRightSideRoleKeyword(event.target.value)} />
             </label>
+            <div className="check-row validation-check-row">
+              <label>
+                <input type="checkbox" checked={newlineValidationEnabled} onChange={(event) => setNewlineValidationEnabled(event.target.checked)} />
+                {tr(language, "正文换行符校验", "Content Line Break Check")}
+              </label>
+            </div>
             {characterIssues.length > 0 && characterLimit !== null && (
               <p className="panel-note">{tr(language, `${characterIssues.length} 行超过 ${characterLimit} 字，已在表格/节点中红色标出。`, `${characterIssues.length} rows exceed ${characterLimit} characters and are highlighted red in the table/nodes.`)}</p>
+            )}
+            {newlineIssues.length > 0 && newlineValidationEnabled && (
+              <p className="panel-note">{tr(language, `${newlineIssues.length} 行正文包含换行符，已在表格/节点中红色标出。`, `${newlineIssues.length} rows contain line breaks and are highlighted red in the table/nodes.`)}</p>
             )}
             {rightSideRoleIssues.length > 0 && (
               <p className="panel-note">{tr(language, `${rightSideRoleIssues.length} 行人物包含 ${rightSideRoleKeyword.trim()} 但位置不是右侧，已在表格/节点中黄色标出。`, `${rightSideRoleIssues.length} rows contain ${rightSideRoleKeyword.trim()} but are not on the right side; they are highlighted yellow in the table/nodes.`)}</p>
@@ -1809,7 +1831,7 @@ function PositionSwitch({ value, language, onFocus, onChange }: { value: string;
 }
 
 function handleTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-  if (shouldBlockTextareaNewline(event.key, event.altKey)) {
+  if (shouldBlockTextareaNewline(event.key, event.altKey, event.ctrlKey)) {
     event.preventDefault();
   }
 }

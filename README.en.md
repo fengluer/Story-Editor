@@ -27,6 +27,7 @@ win-unpacked/Story Editor.exe
 - Validation panel:
   - Story structure validation.
   - Per-row character limit validation; empty means disabled. Over-limit nodes are highlighted red.
+  - Content line break validation. When enabled, nodes whose content contains line breaks are highlighted red.
   - Right-side role validation, such as `$player`. Invalid nodes are highlighted yellow.
 - Success toasts after saving, exporting CSV, or exporting XLSX.
 - Local draft auto-save every 3 minutes by default.
@@ -132,6 +133,7 @@ Click Preprocess to generate dialogue nodes:
 The validation panel lists structure and content issues, and highlights matching rows/nodes.
 
 - Character limit per row: enter a number to enable it; clear the input to disable it. Over-limit nodes are highlighted red.
+- Content line break check: when enabled, nodes whose `content` contains line breaks are highlighted red.
 - Right-side role check: for example, enter `$player`. All nodes whose `role` contains `$player` must use `boxPos = r`. Empty disables the check. Invalid nodes are highlighted yellow.
 
 ### Save and Export

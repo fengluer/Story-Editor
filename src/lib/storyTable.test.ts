@@ -8,6 +8,7 @@ import {
   exportCsvText,
   importCsvText,
   importMatrix,
+  validateContentNewlines,
   validateContentLength,
   validateRightSideRolePosition,
   validateStory,
@@ -125,6 +126,25 @@ describe("story table format", () => {
 
   it("skips content length validation when the limit is empty", () => {
     const issues = validateContentLength([{ id: "1", sign: "#", content: "very long content" }], null);
+
+    expect(issues).toEqual([]);
+  });
+
+  it("reports content rows with line breaks when enabled", () => {
+    const issues = validateContentNewlines(
+      [
+        { id: "1", sign: "#", content: "single line" },
+        { id: "2", sign: "#", content: "first line\nsecond line" },
+      ],
+      true,
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ rowIndex: 1, columnKey: "content", kind: "newline" });
+  });
+
+  it("skips line break validation when disabled", () => {
+    const issues = validateContentNewlines([{ id: "1", sign: "#", content: "first line\r\nsecond line" }], false);
 
     expect(issues).toEqual([]);
   });

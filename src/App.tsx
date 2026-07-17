@@ -17,6 +17,7 @@ import {
   Save,
   Search,
   Settings,
+  Sparkles,
   Table2,
   Trash2,
   Undo2,
@@ -24,6 +25,30 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createEmptyRow, defaultTemplate } from "./defaultTemplate";
+import { AiSettingsModal } from "./components/AiSettingsModal";
+import { AiWritingModal } from "./components/AiWritingModal";
+import { AiWritingProgressModal } from "./components/AiWritingProgressModal";
+import type { AiApiStatus, AiCharacterTurn, AiGodDecision, AiModelRequest, AiPreflightResult, AiProjectSettings, AiWriteOptions, AiWritingSession } from "./ai/types";
+import { createEmptyAiRuntime, loadAiRuntime, loadAiSettings, saveAiRuntime, saveAiSettings } from "./lib/aiStorage";
+import { resolveAiModel, validateAiSettings } from "./lib/aiModels";
+import {
+  applyCharacterTurn,
+  applyGodDecision,
+  AI_PREFLIGHT_SCHEMA,
+  buildAiContextWindow,
+  buildPreflightInput,
+  buildPreflightInstructions,
+  buildCharacterInput,
+  buildCharacterInstructions,
+  buildGodInput,
+  buildGodInstructions,
+  buildCharacterTurnSchema,
+  buildGodDecisionSchema,
+  participantIdsForScene,
+  validateCharacterTurn,
+  validateGodDecisionForRuntime,
+  validatePreflightResult,
+} from "./lib/aiWriting";
 import { filenameWithExt, saveBlob } from "./lib/download";
 import { loadDraft, saveDraft } from "./lib/draftStorage";
 import { readFileAsArrayBuffer, readFileAsText } from "./lib/fileReaders";
@@ -186,6 +211,15 @@ export function App() {
   const [rightSideRoleKeyword, setRightSideRoleKeyword] = useState(() => initialRightSideRoleKeyword());
   const [nodePositions, setNodePositions] = useState<Record<string, NodePosition>>(() => initialNodePositions());
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
+  const [aiSettings, setAiSettings] = useState<AiProjectSettings>(() => loadAiSettings(initialSourceName()));
+  const [aiRuntime, setAiRuntime] = useState(() => {
+    const settings = loadAiSettings(initialSourceName());
+    return loadAiRuntime(initialSourceName(), settings);
+  });
+  const [aiApiStatus, setAiApiStatus] = useState<AiApiStatus>({ available: Boolean(window.storyEditorAi), configuredProviderIds: [] });
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
+  const [aiWritingOpen, setAiWritingOpen] = useState(false);
+  const [aiWritingSession, setAiWritingSession] = useState<AiWritingSession | null>(null);
   const [replaceOptions, setReplaceOptions] = useState<ReplaceOptions>(() => ({
     find: "",
     replace: "",
@@ -199,6 +233,7 @@ export function App() {
   const nodeRefs = useRef(new Map<number, HTMLElement>());
   const pendingScrollRowRef = useRef<number | null>(null);
   const pendingEditorFocusRowRef = useRef<number | null>(null);
+  const aiWritingRunIdRef = useRef(0);
 
   const structureIssues = useMemo(() => validateStory(template, rows, language), [language, template, rows]);
   const characterIssues = useMemo(() => validateContentLength(rows, characterLimit, language), [language, rows, characterLimit]);
@@ -267,6 +302,16 @@ export function App() {
   useEffect(() => {
     setNodePositions(loadNodePositions(sourceName));
   }, [sourceName]);
+
+  useEffect(() => {
+    const nextSettings = loadAiSettings(sourceName);
+    setAiSettings(nextSettings);
+    setAiRuntime(loadAiRuntime(sourceName, nextSettings));
+  }, [sourceName]);
+
+  useEffect(() => {
+    void refreshAiApiStatus();
+  }, []);
 
   useEffect(() => {
     setNodePositions((current) => reconcileNodePositions(rows, current));
@@ -398,6 +443,361 @@ export function App() {
   function notifySuccess(message: string) {
     setStatus(message);
     setToast(message);
+  }
+
+  async function refreshAiApiStatus(): Promise<AiApiStatus> {
+    if (!window.storyEditorAi) {
+      const next = {
+        available: false,
+        configuredProviderIds: [],
+        message: tr(language, "AI 调用只在 Electron 桌面版中可用", "AI calls are available only in the Electron desktop app"),
+      };
+      setAiApiStatus(next);
+      return next;
+    }
+    try {
+      const next = await window.storyEditorAi.getStatus();
+      setAiApiStatus(next);
+      return next;
+    } catch (error) {
+      const next = { available: false, configuredProviderIds: [], message: error instanceof Error ? error.message : tr(language, "无法读取 AI 状态", "Unable to read AI status") };
+      setAiApiStatus(next);
+      return next;
+    }
+  }
+
+  async function persistAiConfiguration(next: AiProjectSettings, apiKeys: Record<string, string>) {
+    validateAiSettings(next);
+    const keysToSave = Object.entries(apiKeys).filter(([, apiKey]) => apiKey.trim());
+    if (keysToSave.length > 0) {
+      if (!window.storyEditorAi) {
+        throw new Error(tr(language, "请在 Electron 桌面版中保存 API Key", "Save the API key in the Electron desktop app"));
+      }
+      for (const [providerId, apiKey] of keysToSave) {
+        await window.storyEditorAi.saveApiKey(providerId, apiKey);
+      }
+    }
+    saveAiSettings(sourceName, next);
+    setAiSettings(next);
+    const nextRuntime = loadAiRuntime(sourceName, next);
+    setAiRuntime(nextRuntime);
+    saveAiRuntime(sourceName, nextRuntime);
+    await refreshAiApiStatus();
+    notifySuccess(tr(language, "AI 设定已保存", "AI settings saved"));
+  }
+
+  async function openAiWriter() {
+    if (aiSettings.characters.length === 0 || aiSettings.scenes.length === 0) {
+      setStatus(tr(language, "请先添加至少一个角色和一个场景", "Add at least one character and one scene first"));
+      setAiSettingsOpen(true);
+      return;
+    }
+    try {
+      validateAiSettings(aiSettings);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : tr(language, "AI 模型配置无效", "The AI model configuration is invalid"));
+      setAiSettingsOpen(true);
+      return;
+    }
+    const status = await refreshAiApiStatus();
+    const selectedModels = [
+      resolveAiModel(aiSettings, aiSettings.god.model),
+      ...aiSettings.characters.map((character) => resolveAiModel(aiSettings, character.model)),
+    ];
+    const missingProvider = selectedModels.find(({ provider }) => provider.requiresApiKey && !status.configuredProviderIds.includes(provider.id));
+    if (!status.available || missingProvider) {
+      setStatus(status.message || tr(language, `请先配置 ${missingProvider?.provider.name ?? "AI"} 的 API Key`, `Configure the API key for ${missingProvider?.provider.name ?? "AI"} first`));
+      setAiSettingsOpen(true);
+      return;
+    }
+    setAiWritingOpen(true);
+  }
+
+  async function generateAiStory(options: AiWriteOptions, resumedSession?: AiWritingSession) {
+    if (!window.storyEditorAi) {
+      throw new Error(tr(language, "请使用 Electron 桌面版运行 AI 编写", "Run AI writing from the Electron desktop app"));
+    }
+    const startingScene = aiSettings.scenes.find((candidate) => candidate.id === options.sceneId);
+    if (!startingScene) {
+      throw new Error(tr(language, "没有找到所选场景", "The selected scene was not found"));
+    }
+    const baseRuntime = resumedSession?.runtime ?? aiRuntime;
+    const participants = participantIdsForScene(baseRuntime, resumedSession?.runtime.activeSceneId || startingScene.id)
+      .map((id) => aiSettings.characters.find((character) => character.id === id))
+      .filter((character) => Boolean(character));
+    if (participants.length === 0) {
+      throw new Error(tr(language, "当前场景没有有效的在场角色", "The scene has no valid participants"));
+    }
+
+    const runId = aiWritingRunIdRef.current + 1;
+    aiWritingRunIdRef.current = runId;
+    setAiWritingOpen(false);
+    let workingRows = resumedSession?.rows ?? rows;
+    let workingSelectedRow = resumedSession?.selectedRow ?? selectedRow;
+    let workingRuntime = resumedSession?.runtime ?? { ...aiRuntime, activeSceneId: startingScene.id };
+    let insertedCount = resumedSession?.insertedCount ?? 0;
+    let silentCount = resumedSession?.silentCount ?? 0;
+    const previewRowIds: string[] = [...(resumedSession?.previewRowIds ?? [])];
+    setAiWritingSession({
+      id: runId,
+      sourceName,
+      options,
+      status: resumedSession?.validation?.valid ? "running" : "validating",
+      progress: resumedSession?.validation?.valid
+        ? tr(language, `正在从第 ${resumedSession.completedTurns + 1} 轮继续生成…`, `Resuming from turn ${resumedSession.completedTurns + 1}…`)
+        : tr(language, "上帝正在校验角色、场景和导演规则的合理性…", "The director is validating characters, scenes, and director rules…"),
+      error: "",
+      validation: resumedSession?.validation ?? null,
+      contextNotice: resumedSession?.contextNotice ?? "",
+      completedTurns: resumedSession?.completedTurns ?? 0,
+      referenceTurns: options.turns,
+      insertedCount: 0,
+      silentCount: 0,
+      rows: workingRows,
+      previewRowIds: [...previewRowIds],
+      selectedRow: workingSelectedRow,
+      runtime: workingRuntime,
+    });
+    const publish = (patch: Partial<AiWritingSession>) => {
+      if (aiWritingRunIdRef.current !== runId) return;
+      setAiWritingSession((current) => current?.id === runId ? { ...current, ...patch } : current);
+    };
+    try {
+      const godModel = resolveAiModel(aiSettings, aiSettings.god.model);
+      if (!resumedSession?.validation?.valid) {
+        const preflightContext = buildAiContextWindow(workingRows, workingSelectedRow, workingRuntime);
+        if (preflightContext.compressed) {
+        publish({ contextNotice: tr(language, `上下文已压缩：${preflightContext.originalStoryRows} 条剧情保留最近 8 条原文，其余转为提要；事件保留最近 ${Math.min(preflightContext.originalEvents, 16)} 条。`, `Context compressed: ${preflightContext.originalStoryRows} story rows keep the latest 8 in full and summarize earlier rows; ${Math.min(preflightContext.originalEvents, 16)} recent events retained.`) });
+        }
+        const preflight = await callAiModelWithCorrection<AiPreflightResult>({
+          providerId: godModel.provider.id,
+          protocol: godModel.provider.protocol,
+          baseURL: godModel.provider.baseURL,
+          requiresApiKey: godModel.provider.requiresApiKey,
+          model: godModel.model.id,
+          instructions: buildPreflightInstructions(),
+          input: buildPreflightInput(aiSettings, workingRuntime, options.instruction, preflightContext),
+          schemaName: "story_preflight_validation",
+          schema: AI_PREFLIGHT_SCHEMA,
+        }, (result) => validatePreflightResult(result, aiSettings), runId, tr(language, "生成前校验", "preflight validation"));
+        if (aiWritingRunIdRef.current !== runId) return;
+        if (!preflight.valid) {
+          publish({ status: "validation_failed", validation: preflight, progress: tr(language, "生成前校验未通过，请根据结果修改 AI 设定后重试。", "Preflight validation failed. Update the AI settings and try again.") });
+          return;
+        }
+        publish({ status: "running", validation: preflight, progress: preflight.issues.length > 0 ? tr(language, "校验通过，但存在建议项；开始生成剧情…", "Validation passed with recommendations; starting generation…") : tr(language, "校验通过，开始生成剧情…", "Validation passed; starting generation…") });
+      }
+      const extraTurns = Math.max(2, Math.ceil(options.turns * 0.25));
+      const maximumTurns = options.turns + extraTurns;
+      for (let turnIndex = resumedSession?.completedTurns ?? 0; turnIndex < maximumTurns; turnIndex += 1) {
+        const currentTurn = turnIndex + 1;
+        const pacingPhase = currentTurn >= maximumTurns ? "final" : currentTurn >= options.turns ? "concluding" : "developing";
+        const turnContext = buildAiContextWindow(workingRows, workingSelectedRow, workingRuntime);
+        if (turnContext.compressed) {
+          publish({ contextNotice: tr(language, `上下文已压缩：${turnContext.originalStoryRows} 条剧情保留最近 8 条原文，其余转为提要；事件保留最近 ${Math.min(turnContext.originalEvents, 16)} 条。`, `Context compressed: ${turnContext.originalStoryRows} story rows keep the latest 8 in full and summarize earlier rows; ${Math.min(turnContext.originalEvents, 16)} recent events retained.`) });
+        }
+        publish({ progress: tr(language, `第 ${currentTurn} 轮（参考 ${options.turns}，最多 ${maximumTurns}）：上帝正在${pacingPhase === "developing" ? "推进" : "收束"}剧情…`, `Turn ${currentTurn} (reference ${options.turns}, max ${maximumTurns}): the director is ${pacingPhase === "developing" ? "developing" : "concluding"} the story…`) });
+        const decision = await callAiModelWithCorrection<AiGodDecision>({
+          providerId: godModel.provider.id,
+          protocol: godModel.provider.protocol,
+          baseURL: godModel.provider.baseURL,
+          requiresApiKey: godModel.provider.requiresApiKey,
+          model: godModel.model.id,
+          instructions: buildGodInstructions(aiSettings),
+          input: buildGodInput(aiSettings, workingRuntime, aiSettings.scenes.find((candidate) => candidate.id === workingRuntime.activeSceneId) ?? startingScene, options.instruction, turnContext, { currentTurn, referenceTurns: options.turns, maximumTurns, phase: pacingPhase }),
+          schemaName: "story_director_decision",
+          schema: buildGodDecisionSchema(aiSettings, workingRuntime),
+        }, (result) => {
+          const resultScene = aiSettings.scenes.find((candidate) => candidate.id === result.sceneId);
+          if (!resultScene) {
+            throw new Error(`上帝 AI 选择了未知场景：${result.sceneId || "空"}`);
+          }
+          validateGodDecisionForRuntime(result, aiSettings, workingRuntime, resultScene);
+          if (pacingPhase === "final" && !result.shouldConclude) {
+            throw new Error(`已达到最大收束轮数 ${maximumTurns}，本轮必须形成本幕落点并返回 shouldConclude=true`);
+          }
+        }, runId, tr(language, "上帝导演决策", "director decision"));
+        if (aiWritingRunIdRef.current !== runId) return;
+        const turnScene = aiSettings.scenes.find((candidate) => candidate.id === decision.sceneId);
+        if (!turnScene) throw new Error(tr(language, `上帝选择了未知场景：${decision.sceneId}`, `The director selected an unknown scene: ${decision.sceneId}`));
+        const directed = applyGodDecision(template, workingRows, workingSelectedRow, workingRuntime, aiSettings, turnScene, decision);
+        workingRows = directed.rows;
+        workingSelectedRow = directed.selectedRow;
+        workingRuntime = directed.runtime;
+        if (directed.inserted) {
+          insertedCount += 1;
+          previewRowIds.push(workingRows[workingSelectedRow].id);
+        }
+        publish({ rows: workingRows, selectedRow: workingSelectedRow, runtime: workingRuntime, insertedCount, previewRowIds: [...previewRowIds] });
+        const character = aiSettings.characters.find((candidate) => candidate.id === decision.actorId);
+        if (!character) {
+          throw new Error(tr(language, `没有找到角色：${decision.actorId}`, `Character not found: ${decision.actorId}`));
+        }
+
+        publish({ progress: tr(language, `第 ${turnIndex + 1} 轮：${character.name || character.id} 正在 ${turnScene.name || turnScene.id} ${decision.shouldConclude ? "完成本幕" : "行动"}…`, `Turn ${turnIndex + 1}: ${character.name || character.id} is ${decision.shouldConclude ? "closing the scene" : "acting"} in ${turnScene.name || turnScene.id}…`) });
+        const characterModel = resolveAiModel(aiSettings, character.model);
+        const characterTurn = await callAiModelWithCorrection<AiCharacterTurn>({
+          providerId: characterModel.provider.id,
+          protocol: characterModel.provider.protocol,
+          baseURL: characterModel.provider.baseURL,
+          requiresApiKey: characterModel.provider.requiresApiKey,
+          model: characterModel.model.id,
+          instructions: buildCharacterInstructions(character),
+          input: buildCharacterInput(aiSettings, workingRuntime, turnScene, character, decision),
+          schemaName: "story_character_turn",
+          schema: buildCharacterTurnSchema(aiSettings, turnScene.id),
+        }, (result) => validateCharacterTurn(result, aiSettings, workingRuntime, turnScene, character), runId, tr(language, `${character.name || character.id} 的角色行动`, `${character.name || character.id}'s character turn`));
+        if (aiWritingRunIdRef.current !== runId) return;
+        const applied = applyCharacterTurn(template, workingRows, workingSelectedRow, workingRuntime, aiSettings, turnScene, character, characterTurn);
+        workingRows = applied.rows;
+        workingSelectedRow = applied.selectedRow;
+        workingRuntime = applied.runtime;
+        if (applied.inserted) {
+          insertedCount += 1;
+          previewRowIds.push(workingRows[workingSelectedRow].id);
+        } else {
+          silentCount += 1;
+        }
+        publish({
+          progress: decision.shouldConclude
+            ? tr(language, `第 ${turnIndex + 1} 轮已形成本幕落点：${decision.conclusionReason}`, `The scene reached its closing beat on turn ${turnIndex + 1}: ${decision.conclusionReason}`)
+            : tr(language, `已完成第 ${turnIndex + 1} 轮，本幕尚未结束`, `Completed turn ${turnIndex + 1}; the scene continues`),
+          completedTurns: turnIndex + 1,
+          rows: workingRows,
+          selectedRow: workingSelectedRow,
+          runtime: workingRuntime,
+          insertedCount,
+          silentCount,
+          previewRowIds: [...previewRowIds],
+        });
+        if (decision.shouldConclude) {
+          break;
+        }
+      }
+      publish({ status: "completed", progress: tr(language, "本幕已形成明确落点，请确认是否写入编辑器。", "The scene has reached a clear closing beat. Confirm whether to write it to the editor.") });
+    } catch (error) {
+      publish({ status: "failed", error: error instanceof Error ? error.message : tr(language, "AI 编写失败", "AI writing failed") });
+    }
+  }
+
+  function discardAiWritingResult() {
+    aiWritingRunIdRef.current += 1;
+    setAiWritingSession(null);
+  }
+
+  function stopAiWriting() {
+    aiWritingRunIdRef.current += 1;
+    setAiWritingSession((current) => current && (current.status === "running" || current.status === "validating") ? {
+      ...current,
+      status: "stopped",
+      progress: current.previewRowIds.length > 0
+        ? tr(language, "已停止继续生成，可以写入当前已生成内容或丢弃。", "Generation stopped. You can write the generated content or discard it.")
+        : tr(language, "已停止生成，尚无可写入内容。", "Generation stopped with no content to write."),
+    } : current);
+  }
+
+  function retryAiWriting() {
+    const session = aiWritingSession;
+    if (!session || !["failed", "stopped", "validation_failed"].includes(session.status)) return;
+    void generateAiStory(session.options, session);
+  }
+
+  function confirmAiWritingResult() {
+    const session = aiWritingSession;
+    const canCommit = session && session.sourceName === sourceName && session.previewRowIds.length > 0 && ["completed", "stopped", "failed"].includes(session.status);
+    if (!session || !canCommit) return;
+    setRows(session.rows);
+    setAiRuntime(session.runtime);
+    saveAiRuntime(sourceName, session.runtime);
+    setSelectedRow(session.selectedRow);
+    pendingScrollRowRef.current = session.selectedRow;
+    pendingEditorFocusRowRef.current = session.selectedRow;
+    setAiWritingSession(null);
+    notifySuccess(tr(language, `AI 已写入 ${session.insertedCount} 个${session.status === "completed" ? "" : "阶段性"}节点`, `AI wrote ${session.insertedCount} ${session.status === "completed" ? "" : "partial "}nodes`));
+  }
+
+  function requestClearAiMemory() {
+    setConfirmDialog({
+      title: tr(language, "清空 AI 记忆", "Clear AI memory"),
+      message: tr(language, "将清空所有 AI 事件、角色私有记忆、位置和当前视角，并开启全新 Session。编辑器中的剧本节点不会删除；上帝仍会读取现有文本作为前情，并按角色应知范围转述给角色 AI。", "This clears all AI events, private character memory, locations, and viewpoint, then starts a new session. Existing editor nodes remain; the director will still read them as prior story and relay only what each character should know."),
+      confirmLabel: tr(language, "清空并新建 Session", "Clear and start new session"),
+      cancelLabel: tr(language, "取消", "Cancel"),
+      intent: "danger",
+      onConfirm: clearAiMemory,
+    });
+  }
+
+  function clearAiMemory() {
+    aiWritingRunIdRef.current += 1;
+    const nextRuntime = createEmptyAiRuntime(aiSettings, true);
+    setAiWritingOpen(false);
+    setAiWritingSession(null);
+    setAiRuntime(nextRuntime);
+    saveAiRuntime(sourceName, nextRuntime);
+    notifySuccess(tr(language, "AI 记忆已清空，已开启全新 Session", "AI memory cleared; a new session has started"));
+  }
+
+  async function callAiModel<T>(request: AiModelRequest, runId?: number): Promise<T> {
+    if (!window.storyEditorAi) {
+      throw new Error(tr(language, "AI 桥接不可用", "AI bridge is unavailable"));
+    }
+    let retryCount = 0;
+    let activeRequest = request;
+    while (true) {
+      try {
+        return await window.storyEditorAi.generate<T>(activeRequest);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : tr(language, "AI 请求失败", "AI request failed");
+        const providerOriginError = isProviderOriginError(message);
+        const maximumRetries = providerOriginError ? 2 : isTransientAiTransportError(message) ? 3 : isRetryableAiError(message) ? 1 : 0;
+        if (retryCount >= maximumRetries || (runId !== undefined && aiWritingRunIdRef.current !== runId)) {
+          if (retryCount === 0) throw error;
+          throw new Error(tr(language, `AI 自动重试 ${retryCount} 次后仍然失败。原因：${message}`, `AI still failed after ${retryCount} automatic retries. Reason: ${message}`));
+        }
+        retryCount += 1;
+        const requestedRetryAfter = Number(message.match(/retry_after=(\d+)/i)?.[1] || 0) * 1000;
+        const delay = providerOriginError
+          ? Math.max(60000, requestedRetryAfter)
+          : isTransientAiTransportError(message) ? [2000, 5000, 10000][retryCount - 1] : 1500;
+        setAiWritingSession((current) => {
+          if (!current || current.id !== runId) return current;
+          return {
+            ...current,
+            progress: providerOriginError
+              ? tr(language, `AI 供应商源站故障：${message} 将遵守供应商退避要求，${delay / 1000} 秒后重试（${retryCount}/${maximumRetries}）…`, `AI provider origin failure: ${message} Respecting provider backoff; retrying in ${delay / 1000}s (${retryCount}/${maximumRetries})…`)
+              : tr(language, `AI 请求失败：${message} ${delay / 1000} 秒后自动重试（${retryCount}/${maximumRetries}）…`, `AI request failed: ${message} Retrying in ${delay / 1000}s (${retryCount}/${maximumRetries})…`),
+          };
+        });
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
+        if (runId !== undefined && aiWritingRunIdRef.current !== runId) throw error;
+      }
+    }
+  }
+
+  async function callAiModelWithCorrection<T>(request: AiModelRequest, validate: (result: T) => void, runId: number, label: string): Promise<T> {
+    const result = await callAiModel<T>(request, runId);
+    try {
+      validate(result);
+      return result;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : tr(language, "返回结果违反本地规则", "The response violated local rules");
+      setAiWritingSession((current) => {
+        if (!current || current.id !== runId) return current;
+        return { ...current, progress: tr(language, `${label}返回不合法：${reason} 正在把错误结果发回 AI 修正（1/1）…`, `${label} was invalid: ${reason} Sending the result back for correction (1/1)…`) };
+      });
+      const correctionRequest = {
+        ...request,
+        input: buildCorrectionInput(request.input, result, reason),
+      };
+      const corrected = await callAiModel<T>(correctionRequest, runId);
+      try {
+        validate(corrected);
+        return corrected;
+      } catch (correctionError) {
+        const correctionReason = correctionError instanceof Error ? correctionError.message : tr(language, "修正结果仍违反本地规则", "The corrected response still violated local rules");
+        throw new Error(tr(language, `${label}自动修正后仍不合法。原因：${correctionReason}`, `${label} was still invalid after automatic correction. Reason: ${correctionReason}`));
+      }
+    }
   }
 
   function openImportPicker() {
@@ -798,6 +1198,18 @@ export function App() {
             <Upload size={16} aria-hidden="true" />
             {tr(language, "导入", "Import")}
           </button>
+          <button type="button" className="ai-writing-button" onClick={() => void openAiWriter()}>
+            <Sparkles size={16} aria-hidden="true" />
+            {tr(language, "AI 编写", "AI Writing")}
+          </button>
+          <button type="button" onClick={() => { void refreshAiApiStatus(); setAiSettingsOpen(true); }}>
+            <Settings size={16} aria-hidden="true" />
+            {tr(language, "AI 设定", "AI Settings")}
+          </button>
+          <button type="button" className="danger-button" onClick={requestClearAiMemory}>
+            <Trash2 size={16} aria-hidden="true" />
+            {tr(language, "清空 AI 记忆", "Clear AI Memory")}
+          </button>
           <button type="button" className="script-preprocess-button" onClick={() => void preprocessScriptFromClipboard()}>
             <ClipboardPaste size={16} aria-hidden="true" />
             {tr(language, "剧本预处理", "Preprocess")}
@@ -850,6 +1262,35 @@ export function App() {
           dialog={confirmDialog}
           onCancel={cancelConfirmDialog}
           onConfirm={confirmCurrentDialog}
+        />
+      )}
+      {aiSettingsOpen && (
+        <AiSettingsModal
+          settings={aiSettings}
+          apiStatus={aiApiStatus}
+          language={language}
+          onClose={() => setAiSettingsOpen(false)}
+          onSave={persistAiConfiguration}
+        />
+      )}
+      {aiWritingOpen && (
+        <AiWritingModal
+          settings={aiSettings}
+          runtime={aiRuntime}
+          language={language}
+          onClose={() => setAiWritingOpen(false)}
+          onStart={(options) => { void generateAiStory(options).catch((error) => setStatus(error instanceof Error ? error.message : tr(language, "AI 编写失败", "AI writing failed"))); }}
+        />
+      )}
+      {aiWritingSession && (
+        <AiWritingProgressModal
+          session={aiWritingSession}
+          settings={aiSettings}
+          language={language}
+          onDiscard={discardAiWritingResult}
+          onStop={stopAiWriting}
+          onRetry={retryAiWriting}
+          onConfirm={confirmAiWritingResult}
         />
       )}
 
@@ -2214,6 +2655,81 @@ function countCharacters(value: string): number {
 function makeDraftSnapshot(input: { sourceName: string; template: StoryTemplate; rows: StoryRow[]; selectedRow: number }): string {
   return JSON.stringify(input);
 }
+
+function isRetryableAiError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  const permanentMarkers = [
+    "api key",
+    "鉴权失败",
+    "invalid ai provider",
+    "invalid ai base url",
+    "request is incomplete",
+    "未找到模型配置",
+    "未知场景",
+    "不在当前场景",
+    "无效的目标场景",
+    "无效的结局判定",
+    "invalid json",
+  ];
+  if (permanentMarkers.some((marker) => normalized.includes(marker))) {
+    return false;
+  }
+  return [
+    "只返回推理内容",
+    "没有返回结构化正文",
+    "no structured output",
+    "timed out",
+    "超时",
+    "429",
+    "限流",
+    "暂时不可用",
+    "fetch failed",
+    "network",
+    "econnreset",
+    "socket",
+  ].some((marker) => normalized.includes(marker));
+}
+
+function isTransientAiTransportError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return [
+    "429",
+    "限流",
+    "（500）",
+    "（502）",
+    "（503）",
+    "（504）",
+    "暂时不可用",
+    "fetch failed",
+    "network",
+    "econnreset",
+    "socket",
+  ].some((marker) => normalized.includes(marker));
+}
+
+function isProviderOriginError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes("cloudflare")
+    && (normalized.includes("origin") || normalized.includes("源站") || normalized.includes("host error"));
+}
+
+function buildCorrectionInput(originalInput: string, invalidOutput: unknown, validationError: string): string {
+  let parsedInput: unknown = originalInput;
+  try {
+    parsedInput = JSON.parse(originalInput);
+  } catch {
+    // Keep non-JSON provider input as text.
+  }
+  return JSON.stringify({
+    originalInput: parsedInput,
+    correction: {
+      validationError,
+      invalidOutput,
+      instruction: "修正上次输出中违反本地规则的字段。保持原任务、既有事实和 JSON Schema 不变，只返回一份完整且合法的新结果；不要解释错误，不要输出思维过程。",
+    },
+  });
+}
+
 
 function formatSavedAt(value: string): string {
   const date = new Date(value);

@@ -32,6 +32,7 @@ win-unpacked/Story Editor.exe
 - Success toasts after saving, exporting CSV, or exporting XLSX.
 - Local draft auto-save every 3 minutes by default.
 - Build as an installer or a portable desktop package.
+- AI writing: a director AI analyzes scenes and assigns visible/audible information before isolated character AIs generate story turns.
 
 ## Quick Start
 
@@ -127,6 +128,20 @@ Click Preprocess to generate dialogue nodes:
 - Column 3 writes to `content`.
 - If the role is `旁白` or `旁白：`, `role` is left empty, but content is still written.
 - Rows without content are skipped.
+
+### AI Writing
+
+Model calls require the Electron desktop app. The regular `npm run dev` browser mode can edit settings but does not send model requests.
+
+1. Click **AI Settings** in the top toolbar.
+2. Under **Providers & Models**, add a provider, configure its protocol, Base URL, API key, and model list, then select the default using `provider/model`. Presets are included for OpenAI, OpenRouter, Ollama, LM Studio, and custom providers.
+3. Configure the director AI, then add each character's persona, speaking style, private goal, motivation, secrets, and initial memory.
+4. Add scenes and select their on-site participants. Scenes constrain local sight and hearing; the director can deliver calls or messages across scenes.
+5. Click **AI Writing**, select a scene, enter direction for the run, and choose the number of turns.
+
+Each turn starts with the director analyzing global facts and assigning what each character can see, hear, or receive. It then chooses one on-site character to act. New dialogue and actions are not automatically broadcast; another character learns them only after the director assigns an observation in a later turn. Characters may act without speaking or remain silent, and complete silence does not create an empty story node.
+
+OpenAI Responses and OpenAI-compatible Chat Completions are supported. Electron stores each provider's API key separately using operating-system encryption. Keys are never written to story CSV/XLSX files or browser drafts. Character and scene settings are stored locally per story filename.
 
 ### Validation
 

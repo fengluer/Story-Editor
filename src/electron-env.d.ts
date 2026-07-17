@@ -1,3 +1,5 @@
+import type { AiApiStatus, AiModelRequest } from "./ai/types";
+
 export {};
 
 declare global {
@@ -25,6 +27,11 @@ declare global {
     };
     storyEditorWindow?: {
       focus: () => Promise<boolean>;
+    };
+    storyEditorAi?: {
+      getStatus: () => Promise<AiApiStatus>;
+      saveApiKey: (providerId: string, apiKey: string) => Promise<{ saved: boolean; configuredProviderIds: string[] }>;
+      generate: <T>(request: AiModelRequest) => Promise<T>;
     };
   }
 }

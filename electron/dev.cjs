@@ -1,5 +1,13 @@
-const { spawn } = require("node:child_process");
+const { execFileSync, spawn } = require("node:child_process");
 const electron = require("electron");
+
+if (process.platform === "win32") {
+  try {
+    execFileSync("chcp.com", ["65001"], { stdio: "ignore" });
+  } catch {
+    // The app can still start when no console is attached.
+  }
+}
 
 const vitePort = process.env.PORT || "5173";
 const viteUrl = `http://127.0.0.1:${vitePort}`;

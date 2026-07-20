@@ -30,7 +30,7 @@ import { AiWritingModal } from "./components/AiWritingModal";
 import { AiWritingProgressModal } from "./components/AiWritingProgressModal";
 import type { AiApiStatus, AiCharacterTurn, AiGodDecision, AiModelRequest, AiPreflightResult, AiProjectSettings, AiWriteOptions, AiWritingSession } from "./ai/types";
 import { createEmptyAiRuntime, loadAiRuntime, loadAiSettings, saveAiRuntime, saveAiSettings } from "./lib/aiStorage";
-import { resolveAiModel, validateAiSettings } from "./lib/aiModels";
+import { resolveAiModel, resolveAiReasoningEffort, validateAiSettings } from "./lib/aiModels";
 import {
   applyCharacterTurn,
   applyGodDecision,
@@ -579,6 +579,8 @@ export function App() {
           input: buildPreflightInput(aiSettings, workingRuntime, options.instruction, preflightContext),
           schemaName: "story_preflight_validation",
           schema: AI_PREFLIGHT_SCHEMA,
+          reasoningEffort: resolveAiReasoningEffort(aiSettings, aiSettings.god.reasoningEffort),
+          supportsReasoningEffort: godModel.provider.supportsReasoningEffort,
         }, (result) => validatePreflightResult(result, aiSettings), runId, tr(language, "生成前校验", "preflight validation"));
         if (aiWritingRunIdRef.current !== runId) return;
         if (!preflight.valid) {
@@ -607,6 +609,8 @@ export function App() {
           input: buildGodInput(aiSettings, workingRuntime, aiSettings.scenes.find((candidate) => candidate.id === workingRuntime.activeSceneId) ?? startingScene, options.instruction, turnContext, { currentTurn, referenceTurns: options.turns, maximumTurns, phase: pacingPhase }),
           schemaName: "story_director_decision",
           schema: buildGodDecisionSchema(aiSettings, workingRuntime),
+          reasoningEffort: resolveAiReasoningEffort(aiSettings, aiSettings.god.reasoningEffort),
+          supportsReasoningEffort: godModel.provider.supportsReasoningEffort,
         }, (result) => {
           const resultScene = aiSettings.scenes.find((candidate) => candidate.id === result.sceneId);
           if (!resultScene) {
@@ -646,6 +650,8 @@ export function App() {
           input: buildCharacterInput(aiSettings, workingRuntime, turnScene, character, decision),
           schemaName: "story_character_turn",
           schema: buildCharacterTurnSchema(aiSettings, turnScene.id),
+          reasoningEffort: resolveAiReasoningEffort(aiSettings, character.reasoningEffort),
+          supportsReasoningEffort: characterModel.provider.supportsReasoningEffort,
         }, (result) => validateCharacterTurn(result, aiSettings, workingRuntime, turnScene, character), runId, tr(language, `${character.name || character.id} 的角色行动`, `${character.name || character.id}'s character turn`));
         if (aiWritingRunIdRef.current !== runId) return;
         const applied = applyCharacterTurn(template, workingRows, workingSelectedRow, workingRuntime, aiSettings, turnScene, character, characterTurn);

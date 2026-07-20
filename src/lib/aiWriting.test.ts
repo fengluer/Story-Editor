@@ -25,6 +25,7 @@ const detective: AiCharacter = {
   name: "侦探",
   roleId: "role_detective",
   model: "",
+  reasoningEffort: "",
   position: "l",
   persona: "冷静谨慎",
   speakingStyle: "句子简短",
@@ -62,9 +63,10 @@ const kitchen: AiScene = {
 
 const settings: AiProjectSettings = {
   version: 2,
-  providers: [{ id: "openai", name: "OpenAI", protocol: "openai-responses", baseURL: "https://api.openai.com/v1", requiresApiKey: true, models: [{ id: "gpt-test", name: "GPT Test" }] }],
+  providers: [{ id: "openai", name: "OpenAI", protocol: "openai-responses", baseURL: "https://api.openai.com/v1", requiresApiKey: true, supportsReasoningEffort: true, models: [{ id: "gpt-test", name: "GPT Test" }] }],
   defaultModel: "openai/gpt-test",
-  god: { name: "上帝", model: "", prompt: "推进调查" },
+  defaultReasoningEffort: "medium",
+  god: { name: "上帝", model: "", reasoningEffort: "high", prompt: "推进调查" },
   characters: [detective, butler],
   scenes: [scene, kitchen],
   activeSceneId: scene.id,
@@ -82,6 +84,7 @@ function runtime(): AiRuntimeState {
     ],
     characterStates: {},
     directorState: "",
+    conflictState: { phase: "setup", stagnationTurns: 0, requiredShift: "none", stakes: "" },
     characterSceneIds: { [detective.id]: scene.id, [butler.id]: scene.id },
     activeSceneId: scene.id,
   };
@@ -163,6 +166,12 @@ describe("AI writing information boundaries", () => {
       sceneId: scene.id,
       actorId: detective.id,
       cue: "seek_information",
+      actorDirective: "换一种方式验证管家的说法",
+      conflictPhase: "probe",
+      stagnationTurns: 0,
+      requiredShift: "information",
+      stakes: "能否取得新线索",
+      pressureDelta: 0,
       shouldConclude: false,
       conclusionReason: "",
       plotAdvance: butler.secrets,
@@ -185,7 +194,8 @@ describe("AI writing information boundaries", () => {
     expect(instructions).toContain("publicEvent 不是每轮必写的气氛旁白");
     expect(instructions).toContain("不要默认采用侦探审讯");
     expect(instructions).toContain("把剧情组织为短阶段");
-    expect(instructions).toContain("第三轮必须产生结构性变化");
+    expect(instructions).toContain("第一次受阻可以明确坚持");
+    expect(instructions).toContain("隐瞒者可以守住秘密");
     expect(instructions).toContain("维护世界事实、证据和物品的一致性");
     expect(instructions).toContain("不得让同一物品无过渡地改变位置或持有者");
   });
@@ -217,6 +227,12 @@ describe("AI writing information boundaries", () => {
         sceneId: activeScene.id,
         actorId: detective.id,
         cue: "respond",
+        actorDirective: "发送已经决定好的会面消息",
+        conflictPhase: "probe",
+        stagnationTurns: 0,
+        requiredShift: "commitment",
+        stakes: "秘密会面是否成立",
+        pressureDelta: 0,
         shouldConclude: false,
         conclusionReason: "",
         plotAdvance: "A 正在秘密联系 B",
@@ -242,6 +258,10 @@ describe("AI character turns", () => {
       privateIntent: "试探",
       memoryUpdate: "",
       destinationSceneId: "",
+      strategy: "respond",
+      acceptedCost: "",
+      stateChangeDimension: "none",
+      stateChange: "",
     }, settings, runtime(), scene, detective)).toThrow("选择沉默时不能同时说出台词");
   });
 
@@ -269,6 +289,12 @@ describe("AI character turns", () => {
       sceneId: scene.id,
       actorId: detective.id,
       cue: "respond",
+      actorDirective: "完成本幕指控",
+      conflictPhase: "aftermath",
+      stagnationTurns: 0,
+      requiredShift: "commitment",
+      stakes: "案件结论",
+      pressureDelta: 0,
       shouldConclude: true,
       conclusionReason: "侦探已确认关键证据并作出最终指控",
       plotAdvance: "案件在本轮收束",
@@ -281,6 +307,7 @@ describe("AI character turns", () => {
     expect(buildGodInstructions(settings)).toContain("maximumTurns 是绝对最大收束轮数");
     expect(buildGodInstructions(settings)).toContain("不表示整部故事必须完结");
     expect(buildCharacterInstructions(detective)).toContain("不要求结束整部故事");
+    expect(characterInput.actorDirective).toBe("完成本幕指控");
   });
 
   it("records silence without forcing an empty story row", () => {
@@ -292,16 +319,22 @@ describe("AI character turns", () => {
       privateIntent: "继续观察",
       memoryUpdate: "管家先开口了",
       destinationSceneId: "",
+      strategy: "observe",
+      acceptedCost: "",
+      stateChangeDimension: "none",
+      stateChange: "",
     });
 
     expect(result.inserted).toBe(false);
     expect(result.rows).toEqual([]);
     expect(result.runtime.events.at(-1)?.kind).toBe("silence");
+    expect(result.runtime.events.at(-1)?.visibleTo).toEqual([detective.id, butler.id]);
     expect(result.runtime.characterStates.detective.nextIntent).toBe("继续观察");
+    expect(result.runtime.conflictState.stagnationTurns).toBe(1);
   });
 
   it("writes a visible action and dialogue into a linked story node", () => {
-    const result = applyCharacterTurn(defaultTemplate, [], 0, { version: 2, sessionId: "test-session", useFullStoryContext: false, events: [], characterStates: {}, directorState: "", characterSceneIds: { [detective.id]: scene.id }, activeSceneId: scene.id }, settings, scene, detective, {
+    const result = applyCharacterTurn(defaultTemplate, [], 0, { version: 2, sessionId: "test-session", useFullStoryContext: false, events: [], characterStates: {}, directorState: "", conflictState: { phase: "probe", stagnationTurns: 0, requiredShift: "information", stakes: "查明真相" }, characterSceneIds: { [detective.id]: scene.id }, activeSceneId: scene.id }, settings, scene, detective, {
       behavior: "speak",
       speech: "昨晚你在哪里？",
       publicAction: "把照片放在柜台上",
@@ -309,6 +342,10 @@ describe("AI character turns", () => {
       privateIntent: "观察管家的反应",
       memoryUpdate: "开始盘问管家",
       destinationSceneId: "",
+      strategy: "question",
+      acceptedCost: "暴露自己正在怀疑管家",
+      stateChangeDimension: "information",
+      stateChange: "管家必须回应具体的不在场问题",
     });
 
     expect(result.inserted).toBe(true);
@@ -320,6 +357,50 @@ describe("AI character turns", () => {
       content: "（把照片放在柜台上）昨晚你在哪里？",
     });
     expect(result.runtime.events[0].visibleTo).toEqual([detective.id]);
+    expect(result.runtime.characterStates.detective.lastStrategy).toBe("question");
+    expect(result.runtime.directorState).toContain("变化=information");
+  });
+
+  it("raises private pressure and rejects repeating the same stalled strategy", () => {
+    const stalledRuntime = { ...runtime(), conflictState: { phase: "resistance" as const, stagnationTurns: 2, requiredShift: "information" as const, stakes: "嫌疑人可能离开" } };
+    const pressured = applyGodDecision(defaultTemplate, [], 0, stalledRuntime, settings, scene, {
+      sceneId: scene.id,
+      actorId: detective.id,
+      cue: "raise_tension",
+      actorDirective: "停止重复追问，改用会改变局面的调查手段",
+      conflictPhase: "escalation",
+      stagnationTurns: 2,
+      requiredShift: "information",
+      stakes: "继续停滞会让嫌疑人离开",
+      pressureDelta: 2,
+      shouldConclude: false,
+      conclusionReason: "",
+      plotAdvance: "侦探必须换策略",
+      observations: [],
+      publicEvent: { description: "", visibleTo: [] },
+    }).runtime;
+    const repeatedRuntime = {
+      ...pressured,
+      characterStates: {
+        ...pressured.characterStates,
+        detective: { ...pressured.characterStates.detective, lastStrategy: "question" as const, strategyRepeatCount: 1 },
+      },
+    };
+
+    expect(pressured.characterStates.detective.pressure).toBe(2);
+    expect(() => validateCharacterTurn({
+      behavior: "speak",
+      speech: "你必须回答我。",
+      publicAction: "",
+      emotion: "急切",
+      privateIntent: "继续逼问",
+      memoryUpdate: "",
+      destinationSceneId: "",
+      strategy: "question",
+      acceptedCost: "",
+      stateChangeDimension: "none",
+      stateChange: "",
+    }, settings, repeatedRuntime, scene, detective)).toThrow("不能连续重复策略");
   });
 
   it("moves a character only to another configured scene", () => {
@@ -331,6 +412,10 @@ describe("AI character turns", () => {
       privateIntent: "检查厨房",
       memoryUpdate: "决定调查厨房",
       destinationSceneId: kitchen.id,
+      strategy: "investigate",
+      acceptedCost: "离开当前对话",
+      stateChangeDimension: "location",
+      stateChange: "侦探离开大厅前往厨房",
     });
 
     expect(result.runtime.characterSceneIds.detective).toBe(kitchen.id);
@@ -343,6 +428,10 @@ describe("AI character turns", () => {
       privateIntent: "",
       memoryUpdate: "",
       destinationSceneId: "missing",
+      strategy: "withdraw",
+      acceptedCost: "",
+      stateChangeDimension: "location",
+      stateChange: "试图离开当前场景",
     })).toThrow("无效的目标场景");
   });
 
@@ -352,6 +441,12 @@ describe("AI character turns", () => {
       sceneId: kitchen.id,
       actorId: detective.id,
       cue: "observe",
+      actorDirective: "调查炉火旁的新动静",
+      conflictPhase: "probe",
+      stagnationTurns: 0,
+      requiredShift: "information",
+      stakes: "厨房中的线索",
+      pressureDelta: 0,
       shouldConclude: false,
       conclusionReason: "",
       plotAdvance: "跟随侦探进入厨房",

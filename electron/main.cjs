@@ -10,7 +10,7 @@ const AI_STATUS_CHANNEL = "story-editor:ai-status";
 const AI_SAVE_KEY_CHANNEL = "story-editor:ai-save-key";
 const AI_GENERATE_CHANNEL = "story-editor:ai-generate";
 const AI_CREDENTIALS_FILE = "ai-credentials.json";
-const AI_MAX_OUTPUT_TOKENS = 2048;
+const AI_BASE_OUTPUT_TOKENS = 4096;
 const AI_REQUEST_TIMEOUT_MS = 180000;
 
 function focusWindow(window) {
@@ -321,6 +321,17 @@ async function requestAiResponse(payload) {
       headers.Authorization = `Bearer ${apiKey}`;
     }
     const useGpt56Parameters = providerId === "openai" && /^gpt-5\.6(?:-|$)/i.test(model);
+    const supportedReasoningEfforts = new Set(["none", "low", "medium", "high", "xhigh"]);
+    const reasoningEffort = supportedReasoningEfforts.has(payload?.reasoningEffort) ? payload.reasoningEffort : "medium";
+    const useReasoningEffort = payload?.supportsReasoningEffort === true;
+    const outputTokenBudgets = {
+      none: AI_BASE_OUTPUT_TOKENS,
+      low: 8192,
+      medium: 16384,
+      high: 32768,
+      xhigh: 65536,
+    };
+    const maxOutputTokens = useReasoningEffort ? outputTokenBudgets[reasoningEffort] : AI_BASE_OUTPUT_TOKENS;
     const requestBody = protocol === "openai-chat"
       ? {
           model,
@@ -333,8 +344,9 @@ async function requestAiResponse(payload) {
             json_schema: { name: schemaName || "story_result", strict: true, schema },
           },
           ...(useGpt56Parameters
-            ? { max_completion_tokens: AI_MAX_OUTPUT_TOKENS, reasoning_effort: "none", verbosity: "low" }
-            : { max_tokens: AI_MAX_OUTPUT_TOKENS }),
+            ? { max_completion_tokens: maxOutputTokens, verbosity: "low" }
+            : { max_tokens: maxOutputTokens }),
+          ...(useReasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         }
       : {
           model,
@@ -342,10 +354,12 @@ async function requestAiResponse(payload) {
           input,
           stream: true,
           store: false,
-          max_output_tokens: AI_MAX_OUTPUT_TOKENS,
+          max_output_tokens: maxOutputTokens,
           ...(useGpt56Parameters ? {
             include: ["reasoning.encrypted_content"],
-            reasoning: { effort: "none", context: "current_turn" },
+          } : {}),
+          ...(useReasoningEffort ? {
+            reasoning: { effort: reasoningEffort, ...(useGpt56Parameters ? { context: "current_turn" } : {}) },
           } : {}),
           text: {
             ...(useGpt56Parameters ? { verbosity: "low" } : {}),
@@ -400,10 +414,10 @@ async function requestAiResponse(payload) {
       const retryBody = {
         ...requestBody,
         input: continuationInput,
-        max_output_tokens: AI_MAX_OUTPUT_TOKENS,
+        max_output_tokens: maxOutputTokens,
       };
       delete retryBody.include;
-      retryBody.reasoning = useGpt56Parameters ? { effort: "none", context: "current_turn" } : requestBody.reasoning;
+      retryBody.reasoning = requestBody.reasoning;
       response = await fetch(endpoint, {
         method: "POST",
         headers,
@@ -436,8 +450,9 @@ async function requestAiResponse(payload) {
           json_schema: { name: schemaName || "story_result", strict: true, schema },
         },
         ...(useGpt56Parameters
-          ? { max_completion_tokens: AI_MAX_OUTPUT_TOKENS, reasoning_effort: "none", verbosity: "low" }
-          : { max_tokens: AI_MAX_OUTPUT_TOKENS }),
+          ? { max_completion_tokens: maxOutputTokens, verbosity: "low" }
+          : { max_tokens: maxOutputTokens }),
+        ...(useReasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       };
       response = await fetch(chatEndpoint, {
         method: "POST",

@@ -1,4 +1,21 @@
 export type AiProviderProtocol = "openai-responses" | "openai-chat";
+export type AiReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
+export type AiConflictPhase = "setup" | "probe" | "resistance" | "escalation" | "crisis" | "aftermath";
+export type AiStateShift = "none" | "information" | "relationship" | "power" | "resource" | "risk" | "location" | "commitment";
+export type AiConflictStrategy =
+  | "respond"
+  | "question"
+  | "observe"
+  | "investigate"
+  | "deny"
+  | "misdirect"
+  | "partial_truth"
+  | "bargain"
+  | "counterattack"
+  | "coerce"
+  | "block"
+  | "withdraw"
+  | "concede";
 
 export type AiModelSettings = {
   id: string;
@@ -11,12 +28,14 @@ export type AiProviderSettings = {
   protocol: AiProviderProtocol;
   baseURL: string;
   requiresApiKey: boolean;
+  supportsReasoningEffort: boolean;
   models: AiModelSettings[];
 };
 
 export type AiGodSettings = {
   name: string;
   model: string;
+  reasoningEffort: AiReasoningEffort | "";
   prompt: string;
 };
 
@@ -25,6 +44,7 @@ export type AiCharacter = {
   name: string;
   roleId: string;
   model: string;
+  reasoningEffort: AiReasoningEffort | "";
   position: "l" | "r";
   persona: string;
   speakingStyle: string;
@@ -47,6 +67,7 @@ export type AiProjectSettings = {
   version: 2;
   providers: AiProviderSettings[];
   defaultModel: string;
+  defaultReasoningEffort: AiReasoningEffort;
   god: AiGodSettings;
   characters: AiCharacter[];
   scenes: AiScene[];
@@ -69,6 +90,16 @@ export type AiCharacterState = {
   memory: string;
   emotion: string;
   nextIntent: string;
+  pressure: number;
+  lastStrategy: AiConflictStrategy | "";
+  strategyRepeatCount: number;
+};
+
+export type AiConflictState = {
+  phase: AiConflictPhase;
+  stagnationTurns: number;
+  requiredShift: AiStateShift;
+  stakes: string;
 };
 
 export type AiRuntimeState = {
@@ -78,6 +109,7 @@ export type AiRuntimeState = {
   events: AiPublicEvent[];
   characterStates: Record<string, AiCharacterState>;
   directorState: string;
+  conflictState: AiConflictState;
   characterSceneIds: Record<string, string>;
   activeSceneId: string;
 };
@@ -98,12 +130,20 @@ export type AiModelRequest = {
   input: string;
   schemaName: string;
   schema: Record<string, unknown>;
+  reasoningEffort: AiReasoningEffort;
+  supportsReasoningEffort: boolean;
 };
 
 export type AiGodDecision = {
   sceneId: string;
   actorId: string;
   cue: "respond" | "observe" | "seek_information" | "raise_tension" | "deescalate" | "advance_private_goal";
+  actorDirective: string;
+  conflictPhase: AiConflictPhase;
+  stagnationTurns: number;
+  requiredShift: AiStateShift;
+  stakes: string;
+  pressureDelta: -1 | 0 | 1 | 2;
   shouldConclude: boolean;
   conclusionReason: string;
   plotAdvance: string;
@@ -126,6 +166,10 @@ export type AiCharacterTurn = {
   privateIntent: string;
   memoryUpdate: string;
   destinationSceneId: string;
+  strategy: AiConflictStrategy;
+  acceptedCost: string;
+  stateChangeDimension: AiStateShift;
+  stateChange: string;
 };
 
 export type AiPreflightIssue = {

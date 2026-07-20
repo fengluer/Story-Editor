@@ -1,6 +1,6 @@
 import { Bot, KeyRound, MapPin, Plus, Save, Trash2, Users, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { AiApiStatus, AiCharacter, AiProjectSettings, AiProviderSettings, AiScene } from "../ai/types";
+import type { AiApiStatus, AiCharacter, AiProjectSettings, AiProviderSettings, AiReasoningEffort, AiScene } from "../ai/types";
 import { AI_PROVIDER_PRESETS, createProviderFromPreset, listAiModels } from "../lib/aiModels";
 
 type AiSettingsTab = "connection" | "god" | "characters" | "scenes";
@@ -220,7 +220,10 @@ function ConnectionSettings({
         <div><h3>{text(language, "Provider 与模型", "Providers & Models")}</h3><p>{text(language, "像 OpenCode 一样按 Provider 管理连接，并使用 provider/model 选择模型。", "Manage connections by provider and select models using provider/model, like OpenCode.")}</p></div>
         <div className="ai-provider-add"><select value={presetId} onChange={(event) => setPresetId(event.target.value)}>{AI_PROVIDER_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}</select><button type="button" onClick={addProvider}><Plus size={16} aria-hidden="true" />{text(language, "添加", "Add")}</button></div>
       </div>
-      <label className="ai-default-model">{text(language, "默认模型", "Default model")}<select value={draft.defaultModel} onChange={(event) => onChange({ ...draft, defaultModel: event.target.value })}><option value="">{text(language, "请选择模型", "Select a model")}</option>{modelOptions.map((option) => <option key={option.ref} value={option.ref}>{option.ref} · {option.label}</option>)}</select></label>
+      <div className="ai-form-grid compact">
+        <label>{text(language, "默认模型", "Default model")}<select value={draft.defaultModel} onChange={(event) => onChange({ ...draft, defaultModel: event.target.value })}><option value="">{text(language, "请选择模型", "Select a model")}</option>{modelOptions.map((option) => <option key={option.ref} value={option.ref}>{option.ref} · {option.label}</option>)}</select></label>
+        <ReasoningEffortSelect language={language} value={draft.defaultReasoningEffort} onChange={(defaultReasoningEffort) => onChange({ ...draft, defaultReasoningEffort: defaultReasoningEffort || "medium" })} />
+      </div>
       <div className="ai-card-list ai-provider-list">
         {draft.providers.map((provider) => {
           const configured = apiStatus.configuredProviderIds.includes(provider.id);
@@ -231,8 +234,10 @@ function ConnectionSettings({
               <label>{text(language, "协议", "Protocol")}<select value={provider.protocol} onChange={(event) => updateProvider(provider.id, { protocol: event.target.value === "openai-chat" ? "openai-chat" : "openai-responses" })}><option value="openai-responses">OpenAI Responses</option><option value="openai-chat">OpenAI-compatible Chat</option></select></label>
               <label className="wide">Base URL<input value={provider.baseURL} placeholder="https://api.example.com/v1" onChange={(event) => updateProvider(provider.id, { baseURL: event.target.value })} /></label>
               <label className="ai-inline-checkbox"><input type="checkbox" checked={provider.requiresApiKey} onChange={(event) => updateProvider(provider.id, { requiresApiKey: event.target.checked })} />{text(language, "需要 API Key", "Requires API key")}</label>
+              <label className="ai-inline-checkbox"><input type="checkbox" checked={provider.supportsReasoningEffort} onChange={(event) => updateProvider(provider.id, { supportsReasoningEffort: event.target.checked })} />{text(language, "发送推理强度参数", "Send reasoning effort")}</label>
               {provider.requiresApiKey && <label>{text(language, "API Key", "API key")}<input type="password" autoComplete="off" value={apiKeys[provider.id] ?? ""} placeholder={configured ? text(language, "留空保留现有密钥", "Leave empty to keep current key") : "sk-…"} onChange={(event) => onApiKeysChange({ ...apiKeys, [provider.id]: event.target.value })} /></label>}
             </div>
+            <p className="ai-helper">{text(language, "仅当该 Provider 支持 OpenAI 风格的 reasoning effort 参数时启用；不支持时关闭可避免请求报错。", "Enable only when the provider supports OpenAI-style reasoning effort parameters; disable it to avoid request errors on unsupported services.")}</p>
             <div className="ai-model-list-heading"><strong>{text(language, "模型清单", "Models")}</strong><button type="button" onClick={() => addModel(provider)}><Plus size={14} aria-hidden="true" />{text(language, "添加模型", "Add model")}</button></div>
             {provider.models.length === 0 ? <div className="ai-empty-state compact">{text(language, "请添加此 Provider 可用的模型 ID。", "Add a model ID available from this provider.")}</div> : <div className="ai-model-list">{provider.models.map((model, index) => <div className="ai-model-row" key={`${provider.id}-${index}`}><label>{text(language, "模型 ID", "Model ID")}<input value={model.id} placeholder="model-id" onChange={(event) => updateModel(provider, index, { id: event.target.value })} /></label><label>{text(language, "显示名称（可选）", "Display name (optional)")}<input value={model.name} onChange={(event) => updateModel(provider, index, { name: event.target.value })} /></label><button type="button" className="icon-button danger" title={text(language, "删除模型", "Delete model")} onClick={() => removeModel(provider, index)}><Trash2 size={15} aria-hidden="true" /></button></div>)}</div>}
           </article>;
@@ -251,6 +256,7 @@ function GodSettings({ draft, language, onChange }: { draft: AiProjectSettings; 
       <div className="ai-form-grid">
         <label>{text(language, "名称", "Name")}<input value={draft.god.name} onChange={(event) => onChange({ ...draft, god: { ...draft.god, name: event.target.value } })} /></label>
         <label>{text(language, "专用模型", "Model override")}<select value={draft.god.model} onChange={(event) => onChange({ ...draft, god: { ...draft.god, model: event.target.value } })}><option value="">{text(language, `继承默认（${draft.defaultModel || "未选择"}）`, `Use default (${draft.defaultModel || "not selected"})`)}</option>{models.map((option) => <option key={option.ref} value={option.ref}>{option.ref}</option>)}</select></label>
+        <ReasoningEffortSelect language={language} value={draft.god.reasoningEffort} inherited={draft.defaultReasoningEffort} onChange={(reasoningEffort) => onChange({ ...draft, god: { ...draft.god, reasoningEffort } })} />
         <label className="wide">{text(language, "故事背景与大纲", "Story background & outline")}<textarea rows={8} value={draft.god.prompt} placeholder={text(language, "填写世界观、时代背景、核心冲突、关键剧情节点和整体走向。无需编写 AI 指令。", "Describe the setting, time period, central conflict, key plot beats, and overall direction. No AI instructions are needed.")} onChange={(event) => onChange({ ...draft, god: { ...draft.god, prompt: event.target.value } })} /></label>
       </div>
     </section>
@@ -287,6 +293,7 @@ function CharacterSettings({
                 <label>{text(language, "角色名", "Name")}<input value={character.name} onChange={(event) => onChange(character.id, { name: event.target.value })} /></label>
                 <label>{text(language, "剧情表人物 ID", "Story role ID")}<input value={character.roleId} onChange={(event) => onChange(character.id, { roleId: event.target.value })} /></label>
                 <label>{text(language, "专用模型", "Model override")}<select value={character.model} onChange={(event) => onChange(character.id, { model: event.target.value })}><option value="">{text(language, `继承默认（${settings.defaultModel || "未选择"}）`, `Use default (${settings.defaultModel || "not selected"})`)}</option>{models.map((option) => <option key={option.ref} value={option.ref}>{option.ref}</option>)}</select></label>
+                <ReasoningEffortSelect language={language} value={character.reasoningEffort} inherited={settings.defaultReasoningEffort} onChange={(reasoningEffort) => onChange(character.id, { reasoningEffort })} />
                 <label>{text(language, "对话位置", "Dialogue position")}<select value={character.position} onChange={(event) => onChange(character.id, { position: event.target.value === "r" ? "r" : "l" })}><option value="l">{text(language, "左侧", "Left")}</option><option value="r">{text(language, "右侧", "Right")}</option></select></label>
                 <label className="wide">{text(language, "人设", "Persona")}<textarea rows={3} value={character.persona} onChange={(event) => onChange(character.id, { persona: event.target.value })} /></label>
                 <label>{text(language, "说话风格", "Speaking style")}<textarea rows={3} value={character.speakingStyle} onChange={(event) => onChange(character.id, { speakingStyle: event.target.value })} /></label>
@@ -360,6 +367,7 @@ function createCharacter(existing: AiCharacter[]): AiCharacter {
     name: "",
     roleId: "",
     model: "",
+    reasoningEffort: "",
     position: existing.length % 2 === 0 ? "l" : "r",
     persona: "",
     speakingStyle: "",
@@ -368,6 +376,43 @@ function createCharacter(existing: AiCharacter[]): AiCharacter {
     secrets: "",
     initialMemory: "",
   };
+}
+
+function ReasoningEffortSelect({
+  language,
+  value,
+  inherited,
+  onChange,
+}: {
+  language: "zh" | "en";
+  value: AiReasoningEffort | "";
+  inherited?: AiReasoningEffort;
+  onChange: (value: AiReasoningEffort | "") => void;
+}) {
+  return (
+    <label>
+      {text(language, "推理强度", "Reasoning effort")}
+      <select value={value} onChange={(event) => onChange(event.target.value as AiReasoningEffort | "")}>
+        {inherited && <option value="">{text(language, `继承默认（${reasoningLabel(inherited, language)}）`, `Use default (${reasoningLabel(inherited, language)})`)}</option>}
+        <option value="none">{text(language, "不推理", "None")}</option>
+        <option value="low">{text(language, "低", "Low")}</option>
+        <option value="medium">{text(language, "中", "Medium")}</option>
+        <option value="high">{text(language, "高", "High")}</option>
+        <option value="xhigh">{text(language, "超高", "Extra high")}</option>
+      </select>
+    </label>
+  );
+}
+
+function reasoningLabel(value: AiReasoningEffort, language: "zh" | "en"): string {
+  const labels: Record<AiReasoningEffort, [string, string]> = {
+    none: ["不推理", "None"],
+    low: ["低", "Low"],
+    medium: ["中", "Medium"],
+    high: ["高", "High"],
+    xhigh: ["超高", "Extra high"],
+  };
+  return labels[value][language === "en" ? 1 : 0];
 }
 
 function createScene(existing: AiScene[]): AiScene {

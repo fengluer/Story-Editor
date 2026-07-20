@@ -2,6 +2,7 @@ import type {
   AiCharacter,
   AiCharacterState,
   AiCharacterTurn,
+  AiConflictStrategy,
   AiGodDecision,
   AiPreflightResult,
   AiProjectSettings,
@@ -19,6 +20,23 @@ const MAX_EVENT_TEXT = 240;
 const MAX_STATE_TEXT = 2500;
 const CONTEXT_TOKEN_BUDGET = 300000;
 const CONTEXT_COMPRESSION_RESERVE = 20000;
+const CONFLICT_PHASES = ["setup", "probe", "resistance", "escalation", "crisis", "aftermath"] as const;
+const STATE_SHIFTS = ["none", "information", "relationship", "power", "resource", "risk", "location", "commitment"] as const;
+const CONFLICT_STRATEGIES: AiConflictStrategy[] = [
+  "respond",
+  "question",
+  "observe",
+  "investigate",
+  "deny",
+  "misdirect",
+  "partial_truth",
+  "bargain",
+  "counterattack",
+  "coerce",
+  "block",
+  "withdraw",
+  "concede",
+];
 
 export type AiContextWindow = {
   recentStoryRows: StoryRow[];
@@ -184,6 +202,12 @@ export function buildGodDecisionSchema(settings: AiProjectSettings, runtime?: Ai
     sceneId: { type: "string", enum: occupiedSceneIds },
     actorId: { type: "string", enum: availableActorIds },
     cue: { type: "string", enum: ["respond", "observe", "seek_information", "raise_tension", "deescalate", "advance_private_goal"] },
+    actorDirective: { type: "string" },
+    conflictPhase: { type: "string", enum: [...CONFLICT_PHASES] },
+    stagnationTurns: { type: "integer", minimum: 0 },
+    requiredShift: { type: "string", enum: [...STATE_SHIFTS] },
+    stakes: { type: "string" },
+    pressureDelta: { type: "integer", enum: [-1, 0, 1, 2] },
     shouldConclude: { type: "boolean" },
     conclusionReason: { type: "string" },
     plotAdvance: { type: "string" },
@@ -210,7 +234,7 @@ export function buildGodDecisionSchema(settings: AiProjectSettings, runtime?: Ai
       required: ["description", "visibleTo"],
     },
   },
-  required: ["sceneId", "actorId", "cue", "shouldConclude", "conclusionReason", "plotAdvance", "observations", "publicEvent"],
+  required: ["sceneId", "actorId", "cue", "actorDirective", "conflictPhase", "stagnationTurns", "requiredShift", "stakes", "pressureDelta", "shouldConclude", "conclusionReason", "plotAdvance", "observations", "publicEvent"],
   };
 }
 
@@ -226,8 +250,12 @@ export function buildCharacterTurnSchema(settings: AiProjectSettings, sceneId: s
     privateIntent: { type: "string" },
     memoryUpdate: { type: "string" },
     destinationSceneId: { type: "string", enum: ["", ...settings.scenes.filter((scene) => scene.id !== sceneId).map((scene) => scene.id)] },
+    strategy: { type: "string", enum: CONFLICT_STRATEGIES },
+    acceptedCost: { type: "string" },
+    stateChangeDimension: { type: "string", enum: [...STATE_SHIFTS] },
+    stateChange: { type: "string" },
   },
-  required: ["behavior", "speech", "publicAction", "emotion", "privateIntent", "memoryUpdate", "destinationSceneId"],
+  required: ["behavior", "speech", "publicAction", "emotion", "privateIntent", "memoryUpdate", "destinationSceneId", "strategy", "acceptedCost", "stateChangeDimension", "stateChange"],
   };
 }
 
@@ -239,17 +267,19 @@ export function buildGodInstructions(settings: AiProjectSettings): string {
     "角色和场景名称只用于阅读，所有输出 key 必须使用 input 中提供的稳定 id。不得用名字代替 actorId、sceneId 或 characterId。",
     "切换视角不等于移动角色。只能在 eligibleSceneActors 中选择 sceneId 和对应 actorId。空场景不能成为当前视角；必须先让当前场景中的角色在角色行动阶段通过 destinationSceneId 移动，等 runtime 更新后，下一轮才能切换到目标场景。",
     "observations 和 publicEvent 只能描述信息与客观变化，不能改变角色位置，也不能声称角色已经到达 runtime 中尚未所在的场景。不得通过旁白、观察或 plotAdvance 让角色瞬移。",
-    "不要替角色写台词。为每个需要获得新信息的角色单独返回 observation：sight 只写他实际能看到的，hearing 写他实际听到或收到的消息内容。",
+    "不要替角色写台词。同场景的 speech 和 publicAction 会由程序自动让在场角色听到或看到，不要再用 observation 重复转述。只为额外获得的新信息单独返回 observation：sight 只写他实际能看到的，hearing 写他实际听到或收到的消息内容。",
     "同一事实可以只分配给部分角色。未列入 observations 的角色不会知道该事实。不得把任何角色的私有想法直接写入他人的 observation。",
     "跨场景消息只能把消息内容放入接收者的 hearing，不得附带发送者当时的动作、位置或环境，除非接收者确实能感知。",
     "existingStoryExcerpt 是剧情编辑器中的前情。即使当前 AI Session 没有历史事件，你也要参考这些文本保持剧情连续，并先重建每个角色的有限认知。",
     "分析前情可见性时必须保守：角色只知道自己亲历、同场景实际看到或听到、以及后来被明确告知的事实。不能仅因文本出现在编辑器中，就认为所有角色都知道；旁白、他人私下行动、秘密、内心和其他场景内容不得自动下发。无法确认角色是否知道时，按不知道处理。",
     "把本轮行动角色理应知道且行动所需的前情放进他的 observation；其他角色只有确实应获得新信息时才添加 observation。使用 sight 和 hearing 区分其获知方式，不得把推测写成已知事实。",
     "先根据角色、场景和本次导演要求判断当前作品的类型、基调与叙事习惯；不要默认采用侦探审讯、证据核对、战斗升级或任何特定类型模板。通用规则服务于当前作品，而不是把所有剧情改写成同一种模式。",
-    "剧情必须由角色选择、信息变化、关系变化、资源得失、风险变化、承诺兑现、计划受阻或场景移动推进。每轮先判断上一轮造成了什么新状态，再选择能让局面发生可识别变化的 actor 和 cue。禁止用近义句重复同一种命令、拒绝、追问、解释、试探、攻击、安慰、拖延或原地观察。",
-    "把剧情组织为短阶段。每个阶段必须有一个可在少数轮内完成的具体目标，例如达成或拒绝一项合作、完成一次尝试、改变一段关系、获得或失去某项资源、抵达一个地点、作出决定或让冲突进入新状态。plotAdvance 要注明当前阶段目标、已发生的变化和下一步收束方式。阶段目标一旦完成，立即进入下一个阶段，不得继续围绕已解决事项追加更细的同类互动。",
-    "同一参与者、同一地点、同一互动方式或同一冲突功能连续出现两轮后，第三轮必须产生结构性变化：改变策略、权力关系、目标、参与者、场景、可用资源、信息分布或行动后果。不要用增加措辞细节、表格栏目、动作幅度或同义改写伪装推进。",
-    "如果连续两轮核心局面没有变化，必须利用已经建立的角色目标、关系、承诺、资源和世界事实打破停滞，例如明确让步、拒绝并承担后果、交换条件、计划执行、外部行动、时间压力、关系转折或场景转换。不得凭空加入与现有因果无关的刺激。",
+    "角色的私人目标是长期方向，不是每轮必须成功的命令。剧情来自互不相容的目标彼此施压，以及角色在受阻后换策略、承担代价或局部失败；不能让双方分别重复“坚持目标”的台词。",
+    "把剧情组织为短阶段。每个阶段必须有一个可在少数轮内完成的具体目标，例如达成或拒绝合作、完成一次尝试、改变关系、获得或失去资源、抵达地点、作出决定或让冲突进入新状态。阶段完成后立即进入下一阶段。",
+    "每轮先评估 conflictState 和上一轮结果，再填写 conflictPhase、requiredShift、stakes 与 pressureDelta。stagnationTurns 必须原样返回 input.conflictState.stagnationTurns，由程序根据角色上一轮是否产生状态变化维护。有效推进必须改变 information、relationship、power、resource、risk、location、commitment 至少一项；纯气氛或换措辞不算变化。",
+    "第一次受阻可以明确坚持；再次受阻必须换手段。同一角色不得连续使用同一种追问、否认、辩解、拖延或威胁。若 stagnationTurns 达到 2，requiredShift 不得为 none，actorDirective 必须要求本轮产生该结构性变化。",
+    "对于“隐瞒与追查”之类的冲突，隐瞒者可以守住秘密，但必须改用可检验的谎言、部分真话、交易、反击、阻止、利用已建立资源或离场，并因此增加风险或付出关系、资源、承诺等代价；追查者也必须在追问失效后改用验证、诱导、施压、行动调查、交换条件或暂时退让。秘密未揭晓不等于剧情没有推进。",
+    "actorDirective 是给本轮角色的具体戏剧任务：说明上一手为何失效、本轮必须改变什么、可以承担何种代价；不得泄露该角色不知道的他人秘密，也不得替角色决定具体台词。",
     "publicEvent 不是每轮必写的气氛旁白。默认返回 description 为空、visibleTo 为空；只有出现会改变角色判断或后续行动的新客观事实时才填写。雷声、暴雨、风声、灯光闪烁、门轻响、沉默、气氛紧张等纯氛围，如果没有新的因果后果，禁止重复生成，也禁止仅换同义词复述。",
     "生成 publicEvent 前检查 recentPublicEvents 和 existingStoryExcerpt：不得重复已有事件、意象、句式或同等剧情功能。环境变化必须产生可利用的后果，例如照明中断暴露某个动作、门被撞开导致线索移动；若没有后果就留空。",
     "你负责维护世界事实、证据和物品的一致性。普通且符合身份的随身物品可以由角色自然使用；能改变剧情真相、证明清白或罪责、解决谜题、提供特殊能力的关键物品，必须先在 existingStoryExcerpt、globalFacts、场景设定或你的 publicEvent 中被明确建立，角色不得凭空创造。",
@@ -258,7 +288,7 @@ export function buildGodInstructions(settings: AiProjectSettings): string {
     "允许为了完成当前动作和本幕目标少量超过参考轮数，但不得把额外轮次用于继续铺垫、新增人物、新增谜题或反复推进。maximumTurns 是绝对最大收束轮数，不得超过。本幕可以在 referenceTurns 之前自然结束。",
     "每轮设置 shouldConclude。它表示当前一幕是否可以结束，不表示整部故事必须完结。当前互动或短阶段目标已得到实质回应、关键选择产生了可识别的结果、当前动作没有被截断，并且本轮角色行动能形成明确落点或自然转入下一幕时，即可设为 true。主线冲突、凶手身份、长期目标和部分悬念可以保留到后续幕；不要为了全部解答而拖长本幕。用 conclusionReason 说明本幕为何已形成落点；否则返回 false 且 conclusionReason 为空。",
     "当 shouldConclude 为 true 时，本轮仍必须选择最适合完成本幕的 actor，并用 cue 和 observation 引导该角色作出确认结果、承担后果、结束交流、离场、转场或明确下一步目标的行动、决定或台词。不要在问题刚提出、角色正在移动但尚未到达、证据尚未产生任何结果或对话仍处于僵局时结束。也不要在本幕目标已经完成后为了凑参考轮数继续追问或制造无关支线。",
-    "plotAdvance 要简明记录：当前阶段目标、本轮新增状态、角色选择及后果、尚未解决事项、下一轮必须发生的结构性变化。不要只记录气氛，不要把微小措辞变化当成推进。plotAdvance 仅供你下一轮继续导演，不发送给角色。",
+    "plotAdvance 要简明记录：当前阶段目标、本轮新增状态、角色选择及后果、尚未解决事项、下一轮必须发生的结构性变化。不要只记录气氛，不要把微小措辞变化当成推进。plotAdvance 仅供你下一轮继续导演；actorDirective 才会发送给角色。",
     "cue 只能是 respond、observe、seek_information、raise_tension、deescalate 或 advance_private_goal。",
     "不得尝试通过 actorId 或 cue 夹带其他文本。",
     limitText(settings.god.prompt, 6000),
@@ -285,6 +315,9 @@ export function buildGodInput(
       secrets: limitText(character.secrets, 1200),
       currentEmotion: limitText(state.emotion, 500),
       nextIntent: limitText(state.nextIntent, 800),
+      pressure: state.pressure,
+      lastStrategy: state.lastStrategy,
+      strategyRepeatCount: state.strategyRepeatCount,
     };
   });
   const globalFacts = context.globalFacts;
@@ -314,6 +347,7 @@ export function buildGodInput(
       }),
     })).filter((entry) => entry.actors.length > 0),
     allCharacters: characterBriefs,
+    conflictState: runtime.conflictState,
     directorState: tailText(runtime.directorState, MAX_STATE_TEXT),
     globalFacts,
     recentPublicEvents,
@@ -338,12 +372,14 @@ export function buildCharacterInstructions(character: AiCharacter): string {
     `你的动机：${character.motivation || "未设置"}`,
     `只有你知道的秘密：${character.secrets || "无"}`,
     "你只能依据提示中提供的可见事件行动。不得假定自己知道未提供的场外事件或其他角色想法。",
-    "speech 和 publicAction 会先成为全局事实，再由上帝决定哪些角色实际看到或听到；emotion、privateIntent 和 memoryUpdate 只保存在你的私有状态中。",
+    "speech 和 publicAction 是公开表达，会自动成为同场景角色可见或可听的事实；只有不公开的想法才能写入 emotion、privateIntent 和 memoryUpdate，并保存在你的私有状态中。",
     "你可以选择 speak（说话）、act（只行动）或 remain_silent（保持沉默）。没有合适的话时应自然地保持沉默，不要为了输出而硬说台词。",
     "保持沉默时 speech 必须为空；如果没有公开动作，publicAction 也可以为空。沉默原因只能通过 privateIntent 表达，不能泄露给其他角色。",
-    "每次行动必须回应最新信息并造成可识别的新变化，例如给出新事实、改变立场、采取可执行动作、承担代价、设置条件、打破僵局或离开场景。不要用近义句重复自己或上一轮的命令、拒绝、追问、辩解和站位描述。",
+    "私人目标决定你长期想保护或获得什么，不要求你每轮成功，也不代表你只能重复一种做法。受阻后可以换策略、承担代价或局部失败；局部失败往往比原地坚持更能推进故事。",
+    "每次行动必须回应最新信息并造成可识别的新变化。先选择 strategy，再让台词或动作真正执行它；台词是一种行动，不是再次声明立场。stateChangeDimension 和 stateChange 要记录本轮实际改变的信息、关系、权力、资源、风险、位置或承诺；没有变化时只能填 none 和空字符串。",
     "根据当前作品类型和人物关系自然行动，不要默认采用审讯笔录、逐项核对、签字确认、反复质问、战斗招式轮换或其他不符合本故事的固定模板。除非角色身份、场景和当前阶段确实需要，否则不要把对话写成流程化记录。",
-    "如果对方重复施压，你不能无限换措辞拖延：应按人物目标选择明确服从、明确拒绝并承担后果、提出具体交换条件、说出部分新信息、采取阻止/逃离行动或保持有意义的沉默。publicAction 只写本轮新发生且可观察的动作，不要反复描述仍站在原处、仍看着某人、手仍放在某处等持续状态。",
+    "如果对方重复施压，你不能无限换措辞拖延：应选择可检验的欺骗、部分真话、交易、反击、阻止、调查、离场、让步或有明确后果的沉默。上一策略没有造成状态变化时，不得再次使用 privateState.lastStrategy；压力越高不等于必须发怒，而是必须采用成本更高、风险更大的做法，并按人设表现。",
+    "acceptedCost 写为追求目标实际付出的新代价，例如失去信任、作出承诺、暴露破绽、放弃资源或离开有利位置；没有新代价时留空。不要为了填写字段虚构代价。",
     "台词应有潜台词、具体对象和当下目的，并与人物关系、已知线索及风险相连；避免解释剧情、复述前情和泛化客套。",
     `publicAction 使用第三人称角色名“${character.name}”描述，不要使用“我”作为动作主语。动作必须是本轮新发生的可观察行为。`,
     "你可以自然使用符合身份、职业、服装和场景的普通物品，例如手机、手帕、钱包、笔或普通钥匙，但不得借此直接解决核心冲突。",
@@ -365,6 +401,12 @@ export function buildCharacterInput(
   const state = characterState(runtime, character);
   return JSON.stringify({
     directorDirective: directorCueText(decision.cue),
+    actorDirective: limitText(decision.actorDirective, 1000),
+    conflict: {
+      phase: decision.conflictPhase,
+      requiredShift: decision.requiredShift,
+      stakes: limitText(decision.stakes, 800),
+    },
     storyConclusion: {
       shouldConclude: decision.shouldConclude,
       reason: decision.shouldConclude ? decision.conclusionReason : "",
@@ -379,6 +421,9 @@ export function buildCharacterInput(
       memory: tailText(state.memory, MAX_STATE_TEXT),
       emotion: limitText(state.emotion, 500),
       nextIntent: limitText(state.nextIntent, 800),
+      pressure: state.pressure,
+      lastStrategy: state.lastStrategy,
+      strategyRepeatCount: state.strategyRepeatCount,
     },
     availableDestinations: settings.scenes.filter((candidate) => candidate.id !== scene.id).map((candidate) => ({ id: candidate.id, name: candidate.name })),
     visibleEvents: visibleEventsForCharacter(runtime.events, scene.id, character.id).slice(-12).map((event) => ({
@@ -410,6 +455,27 @@ export function validateGodDecisionForRuntime(decision: AiGodDecision, settings:
   }
   if (!DIRECTOR_CUES.includes(decision.cue)) {
     throw new Error(`上帝 AI 返回了无效的导演指令：${decision.cue || "空"}`);
+  }
+  if (!cleanText(decision.actorDirective)) {
+    throw new Error("上帝 AI 没有给行动角色提供具体的戏剧任务");
+  }
+  if (!CONFLICT_PHASES.includes(decision.conflictPhase)) {
+    throw new Error(`上帝 AI 返回了无效的冲突阶段：${decision.conflictPhase || "空"}`);
+  }
+  if (!Number.isInteger(decision.stagnationTurns) || decision.stagnationTurns < 0) {
+    throw new Error("上帝 AI 返回了无效的停滞轮数");
+  }
+  if (decision.stagnationTurns !== runtime.conflictState.stagnationTurns) {
+    throw new Error(`上帝 AI 必须沿用当前停滞轮数：${runtime.conflictState.stagnationTurns}`);
+  }
+  if (!STATE_SHIFTS.includes(decision.requiredShift)) {
+    throw new Error(`上帝 AI 返回了无效的状态变化要求：${decision.requiredShift || "空"}`);
+  }
+  if (decision.stagnationTurns >= 2 && decision.requiredShift === "none") {
+    throw new Error("剧情已连续停滞两轮，本轮必须指定结构性变化");
+  }
+  if (![-1, 0, 1, 2].includes(decision.pressureDelta)) {
+    throw new Error("上帝 AI 返回了无效的压力变化");
   }
   const knownCharacterIds = new Set(settings.characters.map((character) => character.id));
   const unknownObservation = decision.observations.find((observation) => !knownCharacterIds.has(observation.characterId));
@@ -470,6 +536,17 @@ export function applyGodDecision(
       visibleTo,
     });
   }
+  const actor = settings.characters.find((character) => character.id === decision.actorId);
+  const actorState = actor ? characterState(runtime, actor) : null;
+  const characterStates = actorState
+    ? {
+        ...runtime.characterStates,
+        [decision.actorId]: {
+          ...actorState,
+          pressure: clampPressure(actorState.pressure + decision.pressureDelta),
+        },
+      }
+    : runtime.characterStates;
 
   return {
     rows: nextRows,
@@ -479,8 +556,14 @@ export function applyGodDecision(
       sessionId: runtime.sessionId,
       useFullStoryContext: runtime.useFullStoryContext,
       events,
-      characterStates: runtime.characterStates,
+      characterStates,
       directorState: appendDirectorState(runtime.directorState, cleanText(decision.plotAdvance)),
+      conflictState: {
+        phase: decision.conflictPhase,
+        stagnationTurns: decision.stagnationTurns,
+        requiredShift: decision.requiredShift,
+        stakes: cleanText(decision.stakes),
+      },
       characterSceneIds: runtime.characterSceneIds,
       activeSceneId: scene.id,
     },
@@ -526,7 +609,7 @@ export function applyCharacterTurn(
     kind: speech ? "speech" : action ? "action" : "silence",
     speech,
     action,
-    visibleTo: [character.id],
+    visibleTo: participantIdsForScene(runtime, scene.id),
     ...(destinationSceneId ? { destinationSceneId } : {}),
   };
   const previousState = characterState(runtime, character);
@@ -534,7 +617,16 @@ export function applyCharacterTurn(
     memory: appendMemory(previousState.memory, cleanText(turn.memoryUpdate)),
     emotion: cleanText(turn.emotion),
     nextIntent: cleanText(turn.privateIntent),
+    pressure: previousState.pressure,
+    lastStrategy: turn.strategy,
+    strategyRepeatCount: previousState.lastStrategy === turn.strategy ? previousState.strategyRepeatCount + 1 : 1,
   };
+  const beatSummary = [
+    `角色行动：${character.name || character.id}`,
+    `策略=${turn.strategy}`,
+    cleanText(turn.acceptedCost) ? `代价=${cleanText(turn.acceptedCost)}` : "",
+    turn.stateChangeDimension !== "none" ? `变化=${turn.stateChangeDimension}:${cleanText(turn.stateChange)}` : "变化=none",
+  ].filter(Boolean).join("；");
 
   return {
     rows: nextRows,
@@ -545,7 +637,12 @@ export function applyCharacterTurn(
       useFullStoryContext: runtime.useFullStoryContext,
       events: [...runtime.events, event],
       characterStates: { ...runtime.characterStates, [character.id]: nextState },
-      directorState: runtime.directorState,
+      directorState: appendDirectorState(runtime.directorState, beatSummary),
+      conflictState: {
+        ...runtime.conflictState,
+        stagnationTurns: turn.stateChangeDimension === "none" ? runtime.conflictState.stagnationTurns + 1 : 0,
+        requiredShift: turn.stateChangeDimension === "none" ? runtime.conflictState.requiredShift : "none",
+      },
       characterSceneIds: destinationSceneId ? { ...runtime.characterSceneIds, [character.id]: destinationSceneId } : runtime.characterSceneIds,
       activeSceneId: runtime.activeSceneId,
     },
@@ -569,6 +666,29 @@ export function validateCharacterTurn(
   }
   const speech = cleanText(turn.speech);
   const action = cleanText(turn.publicAction);
+  if (!CONFLICT_STRATEGIES.includes(turn.strategy)) {
+    throw new Error(`角色返回了无效策略：${turn.strategy || "空"}`);
+  }
+  if (!STATE_SHIFTS.includes(turn.stateChangeDimension)) {
+    throw new Error(`角色返回了无效状态变化：${turn.stateChangeDimension || "空"}`);
+  }
+  const stateChange = cleanText(turn.stateChange);
+  if (turn.stateChangeDimension === "none" && stateChange) {
+    throw new Error("状态没有变化时 stateChange 必须为空");
+  }
+  if (turn.stateChangeDimension !== "none" && !stateChange) {
+    throw new Error("角色声明状态变化时必须说明具体变化");
+  }
+  const previousState = characterState(runtime, character);
+  if (previousState.lastStrategy === turn.strategy && previousState.strategyRepeatCount >= 1 && runtime.conflictState.stagnationTurns >= 1) {
+    throw new Error(`角色不能连续重复策略：${turn.strategy}`);
+  }
+  if (runtime.conflictState.stagnationTurns >= 2 && turn.stateChangeDimension === "none") {
+    throw new Error("剧情已经停滞两轮，本次行动必须造成结构性变化");
+  }
+  if (previousState.pressure >= 3 && turn.stateChangeDimension === "none" && !cleanText(turn.acceptedCost)) {
+    throw new Error("角色处于高压状态，本次行动必须造成变化或承担明确代价");
+  }
   if (destinationSceneId && !action) {
     throw new Error("角色移动时必须描述公开的离场动作");
   }
@@ -600,7 +720,14 @@ function characterState(runtime: AiRuntimeState, character: AiCharacter): AiChar
     memory: character.initialMemory,
     emotion: "",
     nextIntent: "",
+    pressure: 0,
+    lastStrategy: "",
+    strategyRepeatCount: 0,
   };
+}
+
+function clampPressure(value: number): number {
+  return Math.max(0, Math.min(4, Math.round(value)));
 }
 
 function appendMemory(memory: string, update: string): string {

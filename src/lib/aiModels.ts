@@ -1,4 +1,4 @@
-import type { AiModelSettings, AiProjectSettings, AiProviderProtocol, AiProviderSettings } from "../ai/types";
+import type { AiModelSettings, AiProjectSettings, AiProviderProtocol, AiProviderSettings, AiReasoningEffort } from "../ai/types";
 
 export type AiModelOption = {
   ref: string;
@@ -13,6 +13,7 @@ export type AiProviderPreset = {
   protocol: AiProviderProtocol;
   baseURL: string;
   requiresApiKey: boolean;
+  supportsReasoningEffort: boolean;
   models: AiModelSettings[];
 };
 
@@ -23,6 +24,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     protocol: "openai-responses",
     baseURL: "https://api.openai.com/v1",
     requiresApiKey: true,
+    supportsReasoningEffort: true,
     models: [{ id: "gpt-5.6-luna", name: "GPT-5.6 Luna" }],
   },
   {
@@ -31,6 +33,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     protocol: "openai-chat",
     baseURL: "https://openrouter.ai/api/v1",
     requiresApiKey: true,
+    supportsReasoningEffort: false,
     models: [],
   },
   {
@@ -39,6 +42,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     protocol: "openai-chat",
     baseURL: "http://127.0.0.1:11434/v1",
     requiresApiKey: false,
+    supportsReasoningEffort: false,
     models: [],
   },
   {
@@ -47,6 +51,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     protocol: "openai-chat",
     baseURL: "http://127.0.0.1:1234/v1",
     requiresApiKey: false,
+    supportsReasoningEffort: false,
     models: [],
   },
   {
@@ -55,6 +60,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     protocol: "openai-chat",
     baseURL: "https://example.com/v1",
     requiresApiKey: true,
+    supportsReasoningEffort: false,
     models: [],
   },
 ];
@@ -68,6 +74,7 @@ export function createProviderFromPreset(presetId: string, existingIds: string[]
     protocol: preset.protocol,
     baseURL: preset.baseURL,
     requiresApiKey: preset.requiresApiKey,
+    supportsReasoningEffort: preset.supportsReasoningEffort,
     models: preset.models.map((model) => ({ ...model })),
   };
 }
@@ -94,6 +101,10 @@ export function resolveAiModel(settings: AiProjectSettings, selection?: string):
     throw new Error(target ? `未找到模型配置：${target}` : "请先在 AI 设定中添加并选择默认模型");
   }
   return match;
+}
+
+export function resolveAiReasoningEffort(settings: AiProjectSettings, override?: AiReasoningEffort | ""): AiReasoningEffort {
+  return override || settings.defaultReasoningEffort;
 }
 
 export function validateAiSettings(settings: AiProjectSettings): void {
@@ -136,14 +147,27 @@ export function validateAiSettings(settings: AiProjectSettings): void {
     }
   }
   resolveAiModel(settings);
+  if (!isReasoningEffort(settings.defaultReasoningEffort)) {
+    throw new Error(`默认推理强度无效：${settings.defaultReasoningEffort || "空"}`);
+  }
   if (settings.god.model) {
     resolveAiModel(settings, settings.god.model);
+  }
+  if (settings.god.reasoningEffort && !isReasoningEffort(settings.god.reasoningEffort)) {
+    throw new Error(`上帝 AI 推理强度无效：${settings.god.reasoningEffort}`);
   }
   for (const character of settings.characters) {
     if (character.model) {
       resolveAiModel(settings, character.model);
     }
+    if (character.reasoningEffort && !isReasoningEffort(character.reasoningEffort)) {
+      throw new Error(`角色 ${character.name || character.id} 的推理强度无效：${character.reasoningEffort}`);
+    }
   }
+}
+
+function isReasoningEffort(value: string): value is AiReasoningEffort {
+  return ["none", "low", "medium", "high", "xhigh"].includes(value);
 }
 
 function nextProviderId(base: string, existingIds: string[]): string {

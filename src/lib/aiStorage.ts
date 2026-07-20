@@ -1,4 +1,4 @@
-import type { AiCharacter, AiProjectSettings, AiProviderProtocol, AiProviderSettings, AiRuntimeState, AiScene } from "../ai/types";
+import type { AiCharacter, AiCharacterState, AiConflictState, AiProjectSettings, AiProviderProtocol, AiProviderSettings, AiReasoningEffort, AiRuntimeState, AiScene } from "../ai/types";
 import { createProviderFromPreset, modelRef } from "./aiModels";
 
 const SETTINGS_PREFIX = "story-editor.ai-settings.v1";
@@ -22,9 +22,11 @@ export function createDefaultAiSettings(): AiProjectSettings {
     version: 2,
     providers: [provider],
     defaultModel: modelRef(provider.id, provider.models[0].id),
+    defaultReasoningEffort: "medium",
     god: {
       name: "上帝",
       model: "",
+      reasoningEffort: "high",
       prompt: "",
     },
     characters: [],
@@ -41,6 +43,7 @@ export function createEmptyAiRuntime(settings?: AiProjectSettings, useFullStoryC
     events: [],
     characterStates: {},
     directorState: "",
+    conflictState: createEmptyConflictState(),
     characterSceneIds: initialCharacterSceneIds(settings),
     activeSceneId: initialActiveSceneId(settings),
   };
@@ -80,6 +83,7 @@ export function loadAiRuntime(sourceName: string, settings?: AiProjectSettings):
       events?: AiRuntimeState["events"];
       characterStates?: AiRuntimeState["characterStates"];
       directorState?: string;
+      conflictState?: Partial<AiConflictState>;
       characterSceneIds?: Record<string, string>;
       activeSceneId?: string;
       sessionId?: string;
@@ -103,8 +107,9 @@ export function loadAiRuntime(sourceName: string, settings?: AiProjectSettings):
       sessionId: typeof parsed.sessionId === "string" && parsed.sessionId ? parsed.sessionId : createAiSessionId(),
       useFullStoryContext: parsed.useFullStoryContext === true,
       events: parsed.events,
-      characterStates: parsed.characterStates,
+      characterStates: Object.fromEntries(Object.entries(parsed.characterStates).map(([characterId, state]) => [characterId, normalizeCharacterState(state)])),
       directorState: typeof parsed.directorState === "string" ? parsed.directorState : "",
+      conflictState: normalizeConflictState(parsed.conflictState),
       characterSceneIds,
       activeSceneId: parsed.version === 2 && typeof parsed.activeSceneId === "string" && validSceneIds.has(parsed.activeSceneId)
         ? parsed.activeSceneId
@@ -153,8 +158,9 @@ function normalizeV2Settings(parsed: StoredAiSettings): AiProjectSettings {
     version: 2,
     providers: providers.length > 0 ? providers : defaults.providers,
     defaultModel: typeof parsed.defaultModel === "string" ? parsed.defaultModel : defaults.defaultModel,
+    defaultReasoningEffort: normalizeReasoningEffort(parsed.defaultReasoningEffort, defaults.defaultReasoningEffort),
     god: normalizeGodSettings(parsed.god, defaults),
-    characters: Array.isArray(parsed.characters) ? parsed.characters : [],
+    characters: Array.isArray(parsed.characters) ? parsed.characters.map(normalizeCharacter) : [],
     scenes: Array.isArray(parsed.scenes) ? parsed.scenes : [],
     activeSceneId: typeof parsed.activeSceneId === "string" ? parsed.activeSceneId : "",
   };
@@ -171,6 +177,7 @@ function normalizeProvider(value: Partial<AiProviderSettings>): AiProviderSettin
     protocol,
     baseURL: typeof value.baseURL === "string" ? value.baseURL : "",
     requiresApiKey: value.requiresApiKey !== false,
+    supportsReasoningEffort: typeof value.supportsReasoningEffort === "boolean" ? value.supportsReasoningEffort : value.id === "openai",
     models: Array.isArray(value.models)
       ? value.models.filter((model) => model && typeof model.id === "string").map((model) => ({ id: model.id, name: typeof model.name === "string" ? model.name : model.id }))
       : [],
@@ -179,7 +186,12 @@ function normalizeProvider(value: Partial<AiProviderSettings>): AiProviderSettin
 
 function normalizeGodSettings(god: AiProjectSettings["god"] | undefined, defaults: AiProjectSettings): AiProjectSettings["god"] {
   if (!god) return defaults.god;
-  return { ...defaults.god, ...god, prompt: god.prompt === LEGACY_DEFAULT_GOD_PROMPT ? "" : god.prompt };
+  return {
+    ...defaults.god,
+    ...god,
+    reasoningEffort: normalizeOptionalReasoningEffort(god.reasoningEffort, defaults.god.reasoningEffort),
+    prompt: god.prompt === LEGACY_DEFAULT_GOD_PROMPT ? "" : god.prompt,
+  };
 }
 
 function migrateV1Settings(parsed: LegacyAiSettings): AiProjectSettings {
@@ -195,6 +207,7 @@ function migrateV1Settings(parsed: LegacyAiSettings): AiProjectSettings {
     protocol: "openai-responses",
     baseURL: oldEndpoint.replace(/\/?responses\/?$/i, ""),
     requiresApiKey: true,
+    supportsReasoningEffort: true,
     models: legacyModelIds.map((model) => ({ id: model, name: model })),
   };
   const convertModel = (value?: string) => value?.trim() ? modelRef(provider.id, value.trim()) : "";
@@ -202,12 +215,57 @@ function migrateV1Settings(parsed: LegacyAiSettings): AiProjectSettings {
     version: 2,
     providers: [provider],
     defaultModel: modelRef(provider.id, oldModel),
+    defaultReasoningEffort: "medium",
     god: { ...normalizeGodSettings(parsed.god, defaults), model: convertModel(parsed.god?.model) },
     characters: Array.isArray(parsed.characters)
-      ? parsed.characters.map((character) => ({ ...character, model: convertModel(character.model) }))
+      ? parsed.characters.map((character) => normalizeCharacter({ ...character, model: convertModel(character.model) }))
       : [],
     scenes: Array.isArray(parsed.scenes) ? parsed.scenes : [],
     activeSceneId: typeof parsed.activeSceneId === "string" ? parsed.activeSceneId : "",
+  };
+}
+
+function normalizeCharacter(character: AiCharacter): AiCharacter {
+  return { ...character, reasoningEffort: normalizeOptionalReasoningEffort(character.reasoningEffort, "") };
+}
+
+function normalizeReasoningEffort(value: unknown, fallback: AiReasoningEffort): AiReasoningEffort {
+  return isReasoningEffort(value) ? value : fallback;
+}
+
+function normalizeOptionalReasoningEffort(value: unknown, fallback: AiReasoningEffort | ""): AiReasoningEffort | "" {
+  return value === "" || isReasoningEffort(value) ? value : fallback;
+}
+
+function isReasoningEffort(value: unknown): value is AiReasoningEffort {
+  return typeof value === "string" && ["none", "low", "medium", "high", "xhigh"].includes(value);
+}
+
+function createEmptyConflictState(): AiConflictState {
+  return { phase: "setup", stagnationTurns: 0, requiredShift: "none", stakes: "" };
+}
+
+function normalizeConflictState(value: Partial<AiConflictState> | undefined): AiConflictState {
+  const defaults = createEmptyConflictState();
+  const phases = ["setup", "probe", "resistance", "escalation", "crisis", "aftermath"];
+  const shifts = ["none", "information", "relationship", "power", "resource", "risk", "location", "commitment"];
+  return {
+    phase: phases.includes(String(value?.phase)) ? value!.phase! : defaults.phase,
+    stagnationTurns: Number.isInteger(value?.stagnationTurns) ? Math.max(0, Number(value?.stagnationTurns)) : 0,
+    requiredShift: shifts.includes(String(value?.requiredShift)) ? value!.requiredShift! : defaults.requiredShift,
+    stakes: typeof value?.stakes === "string" ? value.stakes : "",
+  };
+}
+
+function normalizeCharacterState(value: Partial<AiCharacterState>): AiCharacterState {
+  const strategies = ["respond", "question", "observe", "investigate", "deny", "misdirect", "partial_truth", "bargain", "counterattack", "coerce", "block", "withdraw", "concede"];
+  return {
+    memory: typeof value?.memory === "string" ? value.memory : "",
+    emotion: typeof value?.emotion === "string" ? value.emotion : "",
+    nextIntent: typeof value?.nextIntent === "string" ? value.nextIntent : "",
+    pressure: Number.isFinite(value?.pressure) ? Math.max(0, Math.min(4, Math.round(Number(value.pressure)))) : 0,
+    lastStrategy: strategies.includes(String(value?.lastStrategy)) ? value.lastStrategy! : "",
+    strategyRepeatCount: Number.isInteger(value?.strategyRepeatCount) ? Math.max(0, Number(value.strategyRepeatCount)) : 0,
   };
 }
 
